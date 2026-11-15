@@ -1,3 +1,4 @@
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -63,6 +64,10 @@ html, body { margin: 0; padding: 0; background: #050914; overflow: hidden; }
   var spinning = true;
   var spinSpeed = DEFAULT_SPIN;
   var hovering = false;
+  var dragging = false;
+  var wasDragged = false;
+  var downX = 0;
+  var downY = 0;
   var busy = false;
   var created = false;
   var ready = false;
@@ -154,6 +159,7 @@ html, body { margin: 0; padding: 0; background: #050914; overflow: hidden; }
 
   function bind() {
     el.on("plotly_click", function (ev) {
+      if (wasDragged) { return; }
       if (!ev || !ev.points || !ev.points.length) { return; }
       var p = ev.points[0];
       if (p.curveNumber !== 0) { return; }
@@ -167,17 +173,35 @@ html, body { margin: 0; padding: 0; background: #050914; overflow: hidden; }
     });
     el.on("plotly_relayout", function () { syncRot(); });
     el.addEventListener("pointerenter", function () { hovering = true; });
-    el.addEventListener("pointerdown", function () {
+    el.addEventListener("pointerdown", function (e) {
       hovering = true;
+      dragging = true;
+      wasDragged = false;
+      downX = e.clientX;
+      downY = e.clientY;
       pauseUntil = performance.now() + 2500;
-    });
+    }, true);
+    window.addEventListener("pointermove", function (e) {
+      if (!dragging) { return; }
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6) {
+        wasDragged = true;
+      }
+    }, true);
+    window.addEventListener("pointerup", function () {
+      if (!dragging) { return; }
+      dragging = false;
+      syncRot();
+      lastTs = performance.now();
+    }, true);
     el.addEventListener("pointerleave", function () {
       syncRot();
       hovering = false;
+      dragging = false;
       lastTs = performance.now();
     });
     el.addEventListener("pointercancel", function () {
       hovering = false;
+      dragging = false;
       lastTs = performance.now();
     });
   }
@@ -211,7 +235,7 @@ html, body { margin: 0; padding: 0; background: #050914; overflow: hidden; }
 
   function tick(ts) {
     window.requestAnimationFrame(tick);
-    if (!ready || !spinning || hovering || busy || ts < pauseUntil) {
+    if (!ready || !spinning || hovering || dragging || busy || ts < pauseUntil) {
       lastTs = ts;
       return;
     }
@@ -275,12 +299,29 @@ html, body { margin: 0; padding: 0; background: #050914; overflow: hidden; }
 </html>
 """
 
-GLOBE_DIR = Path(tempfile.gettempdir()) / "climate_signal_globe"
-GLOBE_DIR.mkdir(parents=True, exist_ok=True)
-GLOBE_INDEX = GLOBE_DIR / "index.html"
-if not GLOBE_INDEX.exists() or GLOBE_INDEX.read_text(encoding="utf-8") != GLOBE_HTML:
-    GLOBE_INDEX.write_text(GLOBE_HTML, encoding="utf-8")
-globe_component = components.declare_component("climate_signal_globe", path=str(GLOBE_DIR))
+def prepare_globe_dir():
+    for base in (Path(tempfile.gettempdir()), APP_DIR):
+        try:
+            folder = base / "climate_signal_globe"
+            folder.mkdir(parents=True, exist_ok=True)
+            index = folder / "index.html"
+            if not index.exists() or index.read_text(encoding="utf-8") != GLOBE_HTML:
+                with tempfile.NamedTemporaryFile("w", dir=str(folder), delete=False, encoding="utf-8") as tmp:
+                    tmp.write(GLOBE_HTML)
+                    tmp_path = tmp.name
+                os.replace(tmp_path, str(index))
+            return folder
+        except OSError:
+            continue
+    return None
+
+
+GLOBE_DIR = prepare_globe_dir()
+globe_component = (
+    components.declare_component("climate_signal_globe", path=str(GLOBE_DIR))
+    if GLOBE_DIR is not None
+    else None
+)
 
 st.markdown(
     """
@@ -638,6 +679,9 @@ def on_manual_coords():
 
 
 def render_globe(var_code):
+    if globe_component is None:
+        st.warning("The 3D globe is unavailable in this environment. Please use the 2D map or the Quick-Jump menu.")
+        return
     lat_c, lon_c = st.session_state.lat, st.session_state.lon
     has_sel = st.session_state.has_selected
 
@@ -737,13 +781,22 @@ def render_2d_map(var_code):
 
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
 
-    map_data = st_folium(
-        m,
-        height=394,
-        use_container_width=True,
-        returned_objects=["last_clicked"],
-        key="interactive_map",
-    )
+    try:
+        map_data = st_folium(
+            m,
+            height=394,
+            use_container_width=True,
+            returned_objects=["last_clicked"],
+            key="interactive_map",
+        )
+    except TypeError:
+        map_data = st_folium(
+            m,
+            height=394,
+            width=700,
+            returned_objects=["last_clicked"],
+            key="interactive_map",
+        )
 
     if map_data and map_data.get("last_clicked"):
         click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
