@@ -2,7 +2,6 @@ import os
 import tempfile
 import time
 from pathlib import Path
-
 import folium
 import numpy as np
 import pandas as pd
