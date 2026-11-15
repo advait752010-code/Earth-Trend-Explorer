@@ -1,5 +1,7 @@
+import tempfile
 import time
 from pathlib import Path
+
 import folium
 import numpy as np
 import pandas as pd
@@ -19,11 +21,266 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-NEW_WIDTH_API = Version(st.__version__) >= Version("1.50.0")
+NEW_WIDTH_API = Version(st.__version__) >= Version("1.51.0")
 STRETCH = {"width": "stretch"} if NEW_WIDTH_API else {"use_container_width": True}
 
 APP_DIR = Path(__file__).resolve().parent
 GIOVANNI_CSV = APP_DIR / "giovanni_svalbard_validation.csv"
+
+SPIN_DEG_PER_SEC = 18.0
+
+GLOBE_HTML = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; padding: 0; background: #050914; overflow: hidden; }
+#globe { width: 100%; height: 390px; color: #cbd5e1; font-family: sans-serif; font-size: 14px; user-select: none; -webkit-user-select: none; }
+</style>
+</head>
+<body>
+<div id="globe"></div>
+<script>
+(function () {
+  var HEIGHT = 390;
+  var DEFAULT_SPIN = 18;
+  var PLOTLY_PRIMARY = "https://cdn.plot.ly/plotly-2.35.2.min.js";
+  var PLOTLY_BACKUP = "https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js";
+  var CONFIG = { displayModeBar: false, scrollZoom: false, doubleClick: false, responsive: true };
+
+  var el = document.getElementById("globe");
+  var meshLat = [];
+  var meshLon = [];
+  for (var la = -84; la <= 84; la += 6) {
+    for (var lo = -180; lo < 180; lo += 6) {
+      meshLat.push(la);
+      meshLon.push(lo);
+    }
+  }
+
+  var rot = { lon: 0, lat: 20 };
+  var focusId = null;
+  var spinning = true;
+  var spinSpeed = DEFAULT_SPIN;
+  var hovering = false;
+  var busy = false;
+  var created = false;
+  var ready = false;
+  var pending = null;
+  var latestArgs = null;
+  var plotlyState = "loading";
+  var lastTs = 0;
+  var pauseUntil = 0;
+  var clickCounter = 0;
+
+  function post(type, data) {
+    var msg = { isStreamlitMessage: true, type: type };
+    for (var k in data) {
+      if (Object.prototype.hasOwnProperty.call(data, k)) {
+        msg[k] = data[k];
+      }
+    }
+    window.parent.postMessage(msg, "*");
+  }
+
+  function wrapLon(v) {
+    return ((((v + 180) % 360) + 360) % 360) - 180;
+  }
+
+  function syncRot() {
+    try {
+      var r = el._fullLayout.geo.projection.rotation;
+      if (r && typeof r.lon === "number" && typeof r.lat === "number") {
+        rot.lon = r.lon;
+        rot.lat = r.lat;
+      }
+    } catch (err) {}
+  }
+
+  function buildData(a) {
+    var data = [{
+      type: "scattergeo",
+      mode: "markers",
+      lat: meshLat,
+      lon: meshLon,
+      marker: { size: 26, opacity: 0.01, color: "#ffffff" },
+      hovertemplate: "Click to select: %{lat:.0f}\u00b0, %{lon:.0f}\u00b0<extra></extra>",
+      showlegend: false
+    }];
+    if (a.selected && a.cell_lat && a.cell_lat.length) {
+      data.push({
+        type: "scattergeo",
+        mode: "lines",
+        lat: a.cell_lat,
+        lon: a.cell_lon,
+        line: { color: "#EF553B", width: 2.2 },
+        hoverinfo: "text",
+        text: a.cell_label,
+        showlegend: false
+      });
+      data.push({
+        type: "scattergeo",
+        mode: "markers",
+        lat: [a.focus_lat],
+        lon: [a.focus_lon],
+        marker: { size: 13, color: "#EF553B", symbol: "circle-cross", line: { color: "white", width: 1.8 } },
+        hovertemplate: "Target: " + a.coord_text + "<extra></extra>",
+        showlegend: false
+      });
+    }
+    return data;
+  }
+
+  function buildLayout() {
+    return {
+      geo: {
+        projection: { type: "orthographic", rotation: { lon: rot.lon, lat: rot.lat, roll: 0 } },
+        showland: true, landcolor: "rgb(40, 74, 54)",
+        showocean: true, oceancolor: "rgb(10, 30, 58)",
+        showlakes: true, lakecolor: "rgb(16, 46, 86)",
+        showcountries: true, countrycolor: "rgba(226, 232, 240, 0.38)", countrywidth: 0.7,
+        showcoastlines: true, coastlinecolor: "rgba(248, 250, 252, 0.7)", coastlinewidth: 0.85,
+        bgcolor: "#050914"
+      },
+      margin: { l: 0, r: 0, t: 0, b: 0 },
+      height: HEIGHT,
+      paper_bgcolor: "#050914",
+      dragmode: "pan",
+      hovermode: "closest",
+      hoverdistance: 25,
+      uirevision: "globe-" + String(focusId)
+    };
+  }
+
+  function bind() {
+    el.on("plotly_click", function (ev) {
+      if (!ev || !ev.points || !ev.points.length) { return; }
+      var p = ev.points[0];
+      if (p.curveNumber !== 0) { return; }
+      var idx = (typeof p.pointNumber === "number") ? p.pointNumber : p.pointIndex;
+      if (typeof idx !== "number" || idx < 0 || idx >= meshLat.length) { return; }
+      clickCounter += 1;
+      post("streamlit:setComponentValue", {
+        value: { lat: meshLat[idx], lon: meshLon[idx], seq: String(Date.now()) + "-" + String(clickCounter) },
+        dataType: "json"
+      });
+    });
+    el.on("plotly_relayout", function () { syncRot(); });
+    el.addEventListener("pointerenter", function () { hovering = true; });
+    el.addEventListener("pointerdown", function () {
+      hovering = true;
+      pauseUntil = performance.now() + 2500;
+    });
+    el.addEventListener("pointerleave", function () {
+      syncRot();
+      hovering = false;
+      lastTs = performance.now();
+    });
+    el.addEventListener("pointercancel", function () {
+      hovering = false;
+      lastTs = performance.now();
+    });
+  }
+
+  function applyArgs(a) {
+    var sel = !!a.selected;
+    spinSpeed = (typeof a.spin_speed === "number") ? a.spin_speed : DEFAULT_SPIN;
+    if (!created || a.focus_id !== focusId) {
+      focusId = a.focus_id;
+      rot.lon = a.focus_lon;
+      rot.lat = sel ? a.focus_lat * 0.65 : 20;
+    }
+    spinning = !sel;
+    if (!created) {
+      created = true;
+      window.Plotly.newPlot(el, buildData(a), buildLayout(), CONFIG).then(function () {
+        ready = true;
+        bind();
+        if (pending) {
+          var next = pending;
+          pending = null;
+          applyArgs(next);
+        }
+      });
+    } else if (!ready) {
+      pending = a;
+    } else {
+      window.Plotly.react(el, buildData(a), buildLayout(), CONFIG);
+    }
+  }
+
+  function tick(ts) {
+    window.requestAnimationFrame(tick);
+    if (!ready || !spinning || hovering || busy || ts < pauseUntil) {
+      lastTs = ts;
+      return;
+    }
+    if (ts - lastTs < 33) { return; }
+    var dt = Math.min((ts - lastTs) / 1000, 0.1);
+    lastTs = ts;
+    rot.lon = wrapLon(rot.lon + spinSpeed * dt);
+    busy = true;
+    try {
+      window.Plotly.relayout(el, { "geo.projection.rotation.lon": rot.lon }).then(
+        function () { busy = false; },
+        function () { busy = false; }
+      );
+    } catch (err) {
+      busy = false;
+    }
+  }
+
+  function loadScript(src, onOk, onFail) {
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = onOk;
+    s.onerror = onFail;
+    document.head.appendChild(s);
+  }
+
+  function ensurePlotly(done) {
+    if (typeof window.Plotly !== "undefined") {
+      done(true);
+      return;
+    }
+    loadScript(PLOTLY_PRIMARY, function () { done(typeof window.Plotly !== "undefined"); }, function () {
+      loadScript(PLOTLY_BACKUP, function () { done(typeof window.Plotly !== "undefined"); }, function () { done(false); });
+    });
+  }
+
+  window.addEventListener("message", function (event) {
+    var d = event.data;
+    if (!d || d.type !== "streamlit:render") { return; }
+    latestArgs = d.args || {};
+    if (plotlyState === "ok") { applyArgs(latestArgs); }
+    post("streamlit:setFrameHeight", { height: HEIGHT });
+  });
+
+  post("streamlit:componentReady", { apiVersion: 1 });
+  post("streamlit:setFrameHeight", { height: HEIGHT });
+
+  ensurePlotly(function (ok) {
+    if (!ok) {
+      plotlyState = "failed";
+      el.textContent = "The 3D globe could not be loaded. Use the 2D map or the Quick-Jump menu instead.";
+      return;
+    }
+    plotlyState = "ok";
+    window.requestAnimationFrame(tick);
+    if (latestArgs) { applyArgs(latestArgs); }
+  });
+})();
+</script>
+</body>
+</html>
+"""
+
+GLOBE_DIR = Path(tempfile.gettempdir()) / "climate_signal_globe"
+GLOBE_DIR.mkdir(parents=True, exist_ok=True)
+GLOBE_INDEX = GLOBE_DIR / "index.html"
+if not GLOBE_INDEX.exists() or GLOBE_INDEX.read_text(encoding="utf-8") != GLOBE_HTML:
+    GLOBE_INDEX.write_text(GLOBE_HTML, encoding="utf-8")
+globe_component = components.declare_component("climate_signal_globe", path=str(GLOBE_DIR))
 
 st.markdown(
     """
@@ -76,7 +333,6 @@ div[data-testid="stMetricValue"] { font-size: 1.48rem; font-weight: 800; color: 
 .target-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 0.15rem; }
 .target-val { font-size: 1.04rem; font-weight: 600; color: #f1f5f9; margin-bottom: 0.75rem; }
 button[data-baseweb="tab"] { font-weight: 600; font-size: 0.92rem; padding-top: 0.6rem; padding-bottom: 0.6rem; }
-iframe[height="0"] { display: none !important; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -160,231 +416,6 @@ def grid_cell(lat, lon, var_code):
     south = max(c_lat - dlat / 2, -90)
     north = min(c_lat + dlat / 2, 90)
     return [[south, c_lon - dlon / 2], [north, c_lon + dlon / 2]], label
-
-
-@st.cache_data(show_spinner=False)
-def globe_click_mesh(step=6):
-    lats = np.arange(-84, 85, step)
-    lons = np.arange(-180, 180, step)
-    lon_grid, lat_grid = np.meshgrid(lons, lats)
-    return lat_grid.ravel().astype(float), lon_grid.ravel().astype(float)
-
-
-@st.cache_data(show_spinner=False)
-def build_globe(focus_lat, focus_lon, focus_nonce):
-    g_lats, g_lons = globe_click_mesh()
-    fig = go.Figure()
-
-    fig.add_trace(go.Scattergeo(
-        lat=g_lats,
-        lon=g_lons,
-        mode="markers",
-        marker=dict(size=26, opacity=0.01, color="#ffffff"),
-        selected=dict(marker=dict(opacity=0.01)),
-        unselected=dict(marker=dict(opacity=0.01)),
-        hovertemplate="Click to select: %{lat:.0f}°, %{lon:.0f}°<extra></extra>",
-        showlegend=False,
-    ))
-
-    fig.update_geos(
-        projection_type="orthographic",
-        projection_rotation=dict(lat=focus_lat * 0.65, lon=focus_lon, roll=0),
-        showland=True, landcolor="rgb(40, 74, 54)",
-        showocean=True, oceancolor="rgb(10, 30, 58)",
-        showlakes=True, lakecolor="rgb(16, 46, 86)",
-        showcountries=True, countrycolor="rgba(226, 232, 240, 0.38)", countrywidth=0.7,
-        showcoastlines=True, coastlinecolor="rgba(248, 250, 252, 0.7)", coastlinewidth=0.85,
-        bgcolor="#050914",
-    )
-    fig.update_layout(
-        height=390,
-        margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor="#050914",
-        clickmode="event+select",
-        dragmode=False,
-        uirevision=f"globe_{focus_nonce}",
-    )
-    return fig, g_lats, g_lons
-
-
-def inject_globle_spin(focus_nonce, focus_lat, focus_lon, snap_to_focus):
-    components.html(
-        f"""
-        <script>
-        (function() {{
-            const FOCUS_NONCE = {int(focus_nonce)};
-            const FOCUS_LAT = {float(focus_lat) * 0.65};
-            const FOCUS_LON = {float(focus_lon)};
-            const SNAP_TO_FOCUS = {"true" if snap_to_focus else "false"};
-            const win = window.parent;
-            const doc = win.document;
-
-            win.__globleState = win.__globleState || {{
-                lon: FOCUS_LON,
-                lat: FOCUS_LAT,
-                targetLon: FOCUS_LON,
-                targetLat: FOCUS_LAT,
-                lastNonce: -1,
-                rafId: null
-            }};
-            const state = win.__globleState;
-
-            if (state.lastNonce !== FOCUS_NONCE) {{
-                state.lastNonce = FOCUS_NONCE;
-                if (SNAP_TO_FOCUS) {{
-                    state.targetLon = FOCUS_LON;
-                    state.targetLat = FOCUS_LAT;
-                    state.lon = FOCUS_LON;
-                    state.lat = FOCUS_LAT;
-                }}
-            }}
-
-            function findGlobeContext() {{
-                const topPlots = doc.querySelectorAll('.js-plotly-plot');
-                for (const p of topPlots) {{
-                    if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {{
-                        return {{ plot: p, plotly: win.Plotly }};
-                    }}
-                }}
-                const iframes = doc.querySelectorAll('iframe');
-                for (const frame of iframes) {{
-                    try {{
-                        const fWin = frame.contentWindow;
-                        const fDoc = frame.contentDocument || (fWin && fWin.document);
-                        if (!fDoc || !fWin || !fWin.Plotly) continue;
-                        const fPlots = fDoc.querySelectorAll('.js-plotly-plot');
-                        for (const p of fPlots) {{
-                            if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {{
-                                return {{ plot: p, plotly: fWin.Plotly }};
-                            }}
-                        }}
-                    }} catch (e) {{}}
-                }}
-                return null;
-            }}
-
-            function attach() {{
-                const ctx = findGlobeContext();
-                if (!ctx) {{
-                    setTimeout(attach, 50);
-                    return;
-                }}
-
-                const {{ plot, plotly }} = ctx;
-                if (plot.dataset.globleBound === '1') return;
-                plot.dataset.globleBound = '1';
-
-                let isDragging = false;
-                let isRelayouting = false;
-                let pauseUntil = 0;
-                let lastTime = performance.now();
-                let lastFrame = 0;
-
-                if (!SNAP_TO_FOCUS && typeof state.lon === 'number') {{
-                    isRelayouting = true;
-                    try {{
-                        plotly.relayout(plot, {{
-                            'geo.projection.rotation.lon': state.lon,
-                            'geo.projection.rotation.lat': state.lat
-                        }});
-                    }} catch (e) {{}}
-                    finally {{ isRelayouting = false; }}
-                }}
-
-                const syncFromPlot = () => {{
-                    const liveRot = (plot._fullLayout && plot._fullLayout.geo && plot._fullLayout.geo.projection && plot._fullLayout.geo.projection.rotation) || {{}};
-                    if (typeof liveRot.lon === 'number') {{
-                        state.lon = liveRot.lon;
-                        state.targetLon = liveRot.lon;
-                    }}
-                    if (typeof liveRot.lat === 'number') {{
-                        state.lat = liveRot.lat;
-                        state.targetLat = liveRot.lat;
-                    }}
-                }};
-
-                const onStartDrag = () => {{
-                    isDragging = true;
-                    pauseUntil = performance.now() + 350;
-                }};
-
-                const onEndDrag = () => {{
-                    if (!isDragging) return;
-                    isDragging = false;
-                    pauseUntil = performance.now() + 250;
-                    syncFromPlot();
-                    lastTime = performance.now();
-                }};
-
-                ['mousedown', 'pointerdown', 'touchstart'].forEach(evt => {{
-                    plot.addEventListener(evt, onStartDrag, {{ passive: true, capture: true }});
-                }});
-                ['mouseup', 'pointerup', 'touchend', 'pointercancel'].forEach(evt => {{
-                    plot.ownerDocument.addEventListener(evt, onEndDrag, {{ passive: true, capture: true }});
-                }});
-
-                if (plot.on) {{
-                    plot.on('plotly_relayout', (ev) => {{
-                        if (isRelayouting || !ev) return;
-                        const r = ev['geo.projection.rotation'];
-                        if (r && typeof r.lon === 'number') {{
-                            state.lon = r.lon;
-                            state.targetLon = r.lon;
-                        }}
-                        if (r && typeof r.lat === 'number') {{
-                            state.lat = r.lat;
-                            state.targetLat = r.lat;
-                        }}
-                        if (typeof ev['geo.projection.rotation.lon'] === 'number') {{
-                            state.lon = ev['geo.projection.rotation.lon'];
-                            state.targetLon = state.lon;
-                        }}
-                        if (typeof ev['geo.projection.rotation.lat'] === 'number') {{
-                            state.lat = ev['geo.projection.rotation.lat'];
-                            state.targetLat = state.lat;
-                        }}
-                    }});
-                }}
-
-                if (state.rafId) cancelAnimationFrame(state.rafId);
-
-                function step(now) {{
-                    if (!plot.isConnected) return;
-                    const dt = Math.min((now - lastTime) / 1000, 0.05);
-                    lastTime = now;
-
-                    if (!isDragging && now >= pauseUntil) {{
-                        state.targetLon += 38.0 * dt;
-                        state.lon += (state.targetLon - state.lon) * 0.18;
-                        state.lat += (state.targetLat - state.lat) * 0.18;
-                        const wrappedLon = ((((state.lon + 180) % 360) + 360) % 360) - 180;
-
-                        if (now - lastFrame >= 16) {{
-                            lastFrame = now;
-                            isRelayouting = true;
-                            try {{
-                                plotly.relayout(plot, {{
-                                    'geo.projection.rotation.lon': wrappedLon,
-                                    'geo.projection.rotation.lat': state.lat
-                                }});
-                            }} catch (e) {{
-                                return;
-                            }} finally {{
-                                isRelayouting = false;
-                            }}
-                        }}
-                    }}
-                    state.rafId = requestAnimationFrame(step);
-                }}
-                state.rafId = requestAnimationFrame(step);
-            }}
-
-            attach();
-        }})();
-        </script>
-        """,
-        height=0,
-    )
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
@@ -570,13 +601,18 @@ st.session_state.setdefault("lon", 72.87)
 st.session_state.setdefault("zoom", 3)
 st.session_state.setdefault("has_selected", False)
 st.session_state.setdefault("last_click", None)
-st.session_state.setdefault("last_globe_sel", None)
+st.session_state.setdefault("last_globe_seq", None)
 st.session_state.setdefault("globe_focus_nonce", 0)
-st.session_state.setdefault("globe_snap_focus", True)
 st.session_state.setdefault("preset", NO_PRESET)
+st.session_state.setdefault("in_lat", 19.07)
+st.session_state.setdefault("in_lon", 72.87)
 
 if "pending_preset" in st.session_state:
     st.session_state["preset"] = st.session_state.pop("pending_preset")
+
+if st.session_state.pop("sync_inputs", False):
+    st.session_state["in_lat"] = float(st.session_state["lat"])
+    st.session_state["in_lon"] = float(st.session_state["lon"])
 
 
 def set_location(lat, lon, zoom=5):
@@ -584,6 +620,7 @@ def set_location(lat, lon, zoom=5):
     st.session_state["lon"] = round(wrap_lon(float(lon)), 4)
     st.session_state["zoom"] = max(st.session_state["zoom"], zoom)
     st.session_state["has_selected"] = True
+    st.session_state["sync_inputs"] = True
 
 
 def on_preset_change():
@@ -592,53 +629,50 @@ def on_preset_change():
         set_location(*coords)
         st.session_state["zoom"] = 5
         st.session_state["globe_focus_nonce"] += 1
-        st.session_state["globe_snap_focus"] = True
-        st.session_state["last_globe_sel"] = None
 
 
 def on_manual_coords():
     set_location(st.session_state["in_lat"], st.session_state["in_lon"])
     st.session_state["preset"] = NO_PRESET
     st.session_state["globe_focus_nonce"] += 1
-    st.session_state["globe_snap_focus"] = True
-    st.session_state["last_globe_sel"] = None
 
 
-def render_globe():
+def render_globe(var_code):
     lat_c, lon_c = st.session_state.lat, st.session_state.lon
-    focus_nonce = st.session_state.globe_focus_nonce
-    snap_focus = st.session_state.globe_snap_focus
+    has_sel = st.session_state.has_selected
 
-    globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, focus_nonce)
-    event = st.plotly_chart(
-        globe_fig,
-        key="globe_main",
-        on_select="rerun",
-        selection_mode="points",
-        config={"displayModeBar": False, "scrollZoom": True},
-        **STRETCH,
+    cell_lat, cell_lon, cell_label = [], [], ""
+    if has_sel:
+        bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
+        (south, west), (north, east) = bounds
+        cell_lat = [float(south), float(north), float(north), float(south), float(south)]
+        cell_lon = [float(west), float(west), float(east), float(east), float(west)]
+
+    event = globe_component(
+        focus_id=int(st.session_state.globe_focus_nonce),
+        focus_lat=float(lat_c),
+        focus_lon=float(lon_c),
+        selected=bool(has_sel),
+        spin_speed=float(SPIN_DEG_PER_SEC),
+        cell_lat=cell_lat,
+        cell_lon=cell_lon,
+        cell_label=cell_label,
+        coord_text=fmt_coords(lat_c, lon_c),
+        key="globe_component",
+        default=None,
     )
-    inject_globle_spin(focus_nonce, lat_c, lon_c, snap_focus)
-    st.caption("💡 Click anywhere on the globe to select a location, or drag to rotate freely.")
+    st.caption("💡 Click anywhere on the globe to select a location, or drag to rotate it. "
+               "The globe pauses while your cursor is on it.")
 
-    try:
-        points = event["selection"]["points"]
-    except (KeyError, TypeError):
-        points = []
-    for p in points:
-        if p.get("curve_number", 0) != 0:
-            continue
-        idx = p.get("point_index", p.get("point_number"))
-        if idx is None or not (0 <= int(idx) < len(g_lats)):
-            continue
-        sel = (float(g_lats[int(idx)]), float(g_lons[int(idx)]))
-        if sel != st.session_state.last_globe_sel:
-            st.session_state.last_globe_sel = sel
-            set_location(*sel)
+    if isinstance(event, dict):
+        seq = event.get("seq")
+        new_lat, new_lon = event.get("lat"), event.get("lon")
+        if seq is not None and new_lat is not None and new_lon is not None \
+                and seq != st.session_state.last_globe_seq:
+            st.session_state.last_globe_seq = seq
+            set_location(new_lat, new_lon)
             st.session_state["pending_preset"] = NO_PRESET
-            st.session_state["globe_snap_focus"] = False
             st.rerun()
-        break
 
 
 def render_2d_map(var_code):
@@ -706,7 +740,7 @@ def render_2d_map(var_code):
     map_data = st_folium(
         m,
         height=394,
-        width=None,
+        use_container_width=True,
         returned_objects=["last_clicked"],
         key="interactive_map",
     )
@@ -718,8 +752,6 @@ def render_2d_map(var_code):
             set_location(*click)
             st.session_state["pending_preset"] = NO_PRESET
             st.session_state["globe_focus_nonce"] += 1
-            st.session_state["globe_snap_focus"] = True
-            st.session_state["last_globe_sel"] = None
             st.rerun()
 
 
@@ -748,8 +780,8 @@ with st.sidebar:
     st.selectbox("Jump to a Region", list(PRESETS.keys()), key="preset", on_change=on_preset_change)
 
     with st.expander("📌 Or enter coordinates"):
-        st.number_input("Latitude", min_value=-90.0, max_value=90.0, value=float(st.session_state.lat), step=0.5, key="in_lat")
-        st.number_input("Longitude", min_value=-180.0, max_value=180.0, value=float(st.session_state.lon), step=0.5, key="in_lon")
+        st.number_input("Latitude", min_value=-90.0, max_value=90.0, step=0.5, key="in_lat")
+        st.number_input("Longitude", min_value=-180.0, max_value=180.0, step=0.5, key="in_lon")
         st.button("Use these coordinates", on_click=on_manual_coords, **STRETCH)
 
     st.divider()
@@ -781,7 +813,7 @@ with col_map:
     )
 
     if view_mode == "🌍 3D Globe":
-        render_globe()
+        render_globe(var_code)
     else:
         render_2d_map(var_code)
 
