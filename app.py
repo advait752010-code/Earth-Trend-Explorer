@@ -1,7 +1,5 @@
-import json
 import time
 from pathlib import Path
-
 import folium
 import numpy as np
 import pandas as pd
@@ -258,22 +256,9 @@ def build_3d_globe_spec(lat_c, lon_c, var_code, has_selected):
             showlegend=False,
         ))
 
-    n_frames = 36
-    frames = []
-    for k in range(n_frames):
-        rot_lon = wrap_lon(lon_c + k * (360.0 / n_frames))
-        frames.append(go.Frame(
-            name=f"r{k}",
-            layout=dict(
-                geo=dict(
-                    projection_rotation=dict(lat=lat_c * 0.5, lon=rot_lon, roll=0)
-                )
-            ),
-        ))
-
     fig.update_geos(
         projection_type="orthographic",
-        projection_rotation=dict(lat=lat_c, lon=lon_c, roll=0),
+        projection_rotation=dict(lat=lat_c * 0.65, lon=lon_c, roll=0),
         showland=True,
         landcolor="rgb(40, 74, 54)",
         showocean=True,
@@ -290,7 +275,6 @@ def build_3d_globe_spec(lat_c, lon_c, var_code, has_selected):
         bgcolor="rgba(0,0,0,0)",
     )
 
-    fig.frames = frames
     fig.update_layout(
         height=390,
         margin=dict(l=0, r=0, t=0, b=0),
@@ -330,35 +314,41 @@ def render_spinning_globe(lat_c, lon_c, var_code, has_selected):
             const spec = {fig_json};
             const el = document.getElementById("globe");
             let spinning = true;
+            let currentLon = {lon_c};
+            const baseLat = {lat_c * 0.65};
+            let lastTime = performance.now();
+            let rafId = null;
 
-            function startSpin() {{
+            function spinLoop(now) {{
                 if (!spinning) return;
-                Plotly.animate(el, null, {{
-                    frame: {{ duration: 600, redraw: true }},
-                    transition: {{ duration: 600, easing: "linear" }},
-                    fromcurrent: true,
-                    mode: "immediate"
+                const dt = Math.min((now - lastTime) / 1000, 0.1);
+                lastTime = now;
+                currentLon = ((currentLon + 12 * dt + 180) % 360) - 180;
+                Plotly.relayout(el, {{
+                    "geo.projection.rotation.lon": currentLon,
+                    "geo.projection.rotation.lat": baseLat
                 }});
+                rafId = requestAnimationFrame(spinLoop);
+            }}
+
+            function stopSpin() {{
+                if (!spinning) return;
+                spinning = false;
+                if (rafId) cancelAnimationFrame(rafId);
             }}
 
             Plotly.newPlot(el, spec.data, spec.layout, {{
                 displayModeBar: false,
                 responsive: true
             }}).then(() => {{
-                if (spec.frames && spec.frames.length) {{
-                    Plotly.addFrames(el, spec.frames).then(() => {{
-                        startSpin();
-                    }});
-                }}
+                lastTime = performance.now();
+                rafId = requestAnimationFrame(spinLoop);
 
-                el.on("plotly_relayout", () => {{
-                    if (spinning) {{
-                        spinning = false;
-                        Plotly.animate(el, [], {{ mode: "immediate" }});
-                    }}
-                }});
+                el.addEventListener("pointerdown", stopSpin, {{ passive: true }});
+                el.addEventListener("wheel", stopSpin, {{ passive: true }});
 
                 el.on("plotly_click", (evt) => {{
+                    stopSpin();
                     if (!evt || !evt.points || !evt.points.length) return;
                     const pt = evt.points[0];
                     if (typeof pt.lat === "number" && typeof pt.lon === "number") {{
@@ -652,8 +642,23 @@ with col_map:
             location=[lat_c, lon_c],
             zoom_start=st.session_state.zoom,
             tiles=None,
-            control_scale=True,
+            control_scale=False,
         )
+        folium.plugins.MeasureControl(position="bottomleft") if False else None
+        m.add_child(folium.Element(
+            """
+            <style>
+            .leaflet-control-scale-line {
+                box-sizing: content-box !important;
+                white-space: nowrap !important;
+                font-size: 11px !important;
+                line-height: 1.2 !important;
+                padding: 2px 6px !important;
+            }
+            </style>
+            """
+        ))
+        folium.control.Scale(position="bottomleft", imperial=False, max_width=140).add_to(m)
 
         satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
         folium.TileLayer(
