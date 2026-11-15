@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import pymannkendall as mk
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from packaging.version import Version
 from scipy import stats
 from streamlit_folium import st_folium
@@ -23,9 +24,6 @@ STRETCH = {"width": "stretch"} if NEW_WIDTH_API else {"use_container_width": Tru
 
 APP_DIR = Path(__file__).resolve().parent
 GIOVANNI_CSV = APP_DIR / "giovanni_svalbard_validation.csv"
-
-SPIN_DEG_PER_SEC = 18.0
-SPIN_INTERVAL = 0.35
 
 st.markdown(
     """
@@ -171,7 +169,8 @@ def globe_click_mesh(step=5):
     return lat_grid.ravel().astype(float), lon_grid.ravel().astype(float)
 
 
-def build_globe(lat_c, lon_c, var_code, has_selected, spin_lon=None):
+@st.cache_data(show_spinner=False)
+def build_globe(lat_c, lon_c, var_code, has_selected):
     g_lats, g_lons = globe_click_mesh()
     fig = go.Figure()
 
@@ -195,6 +194,8 @@ def build_globe(lat_c, lon_c, var_code, has_selected, spin_lon=None):
             lon=[west, west, east, east, west],
             mode="lines",
             line=dict(color="#EF553B", width=2.2),
+            fill="toself",
+            fillcolor="rgba(239, 85, 59, 0.25)",
             hoverinfo="text",
             text=cell_label,
             showlegend=False,
@@ -210,10 +211,7 @@ def build_globe(lat_c, lon_c, var_code, has_selected, spin_lon=None):
             showlegend=False,
         ))
 
-    if spin_lon is None:
-        rotation = dict(lat=lat_c * 0.65, lon=lon_c, roll=0)
-    else:
-        rotation = dict(lat=20, lon=spin_lon, roll=0)
+    rotation = dict(lat=lat_c * 0.65, lon=lon_c, roll=0) if has_selected else dict(lat=18, lon=lon_c, roll=0)
 
     fig.update_geos(
         projection_type="orthographic",
@@ -230,8 +228,72 @@ def build_globe(lat_c, lon_c, var_code, has_selected, spin_lon=None):
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="#050914",
         clickmode="event+select",
+        uirevision=f"globe_{has_selected}_{lat_c}_{lon_c}",
     )
     return fig, g_lats, g_lons
+
+
+def inject_smooth_globe_spin(active):
+    if not active:
+        return
+    components.html(
+        """
+        <script>
+        (function() {
+            const doc = window.parent.document;
+            let rafId = null;
+            let running = true;
+            let lastTime = performance.now();
+
+            function findPlot() {
+                const plots = doc.querySelectorAll('.js-plotly-plot');
+                for (const p of plots) {
+                    if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {
+                        return p;
+                    }
+                }
+                return null;
+            }
+
+            function stop() {
+                running = false;
+                if (rafId) cancelAnimationFrame(rafId);
+            }
+
+            function attachAndSpin() {
+                const plot = findPlot();
+                if (!plot || !window.parent.Plotly) {
+                    if (running) setTimeout(attachAndSpin, 120);
+                    return;
+                }
+
+                plot.addEventListener('pointerdown', stop, { passive: true });
+                plot.addEventListener('wheel', stop, { passive: true });
+
+                let lon = (plot._fullLayout.geo.projection.rotation && plot._fullLayout.geo.projection.rotation.lon) || 72.87;
+                const lat = (plot._fullLayout.geo.projection.rotation && plot._fullLayout.geo.projection.rotation.lat) || 18;
+                lastTime = performance.now();
+
+                function step(now) {
+                    if (!running || !doc.body.contains(plot)) return;
+                    const dt = Math.min((now - lastTime) / 1000, 0.05);
+                    lastTime = now;
+                    lon = ((lon + 10.0 * dt + 180) % 360) - 180;
+                    window.parent.Plotly.relayout(plot, {
+                        'geo.projection.rotation.lon': lon,
+                        'geo.projection.rotation.lat': lat
+                    });
+                    rafId = requestAnimationFrame(step);
+                }
+                rafId = requestAnimationFrame(step);
+            }
+
+            attachAndSpin();
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
@@ -451,9 +513,8 @@ def on_manual_coords():
 def render_globe(var_code):
     lat_c, lon_c = st.session_state.lat, st.session_state.lon
     has_sel = st.session_state.has_selected
-    spin_lon = None if has_sel else wrap_lon(lon_c + time.time() * SPIN_DEG_PER_SEC)
 
-    globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, var_code, has_sel, spin_lon)
+    globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, var_code, has_sel)
     event = st.plotly_chart(
         globe_fig,
         key=f"globe_{st.session_state.globe_nonce}",
@@ -462,7 +523,8 @@ def render_globe(var_code):
         config={"displayModeBar": False},
         **STRETCH,
     )
-    st.caption("💡 Click anywhere on the globe to select a location.")
+    inject_smooth_globe_spin(active=not has_sel)
+    st.caption("💡 Click anywhere on the globe to select a location, or drag to rotate manually.")
 
     try:
         points = event["selection"]["points"]
@@ -508,8 +570,8 @@ with st.sidebar:
     st.selectbox("Jump to a Region", list(PRESETS.keys()), key="preset", on_change=on_preset_change)
 
     with st.expander("📌 Or enter coordinates"):
-        st.number_input("Latitude", min_value=-90.0, max_value=90.0, value=19.07, step=0.5, key="in_lat")
-        st.number_input("Longitude", min_value=-180.0, max_value=180.0, value=72.87, step=0.5, key="in_lon")
+        st.number_input("Latitude", min_value=-90.0, max_value=90.0, value=float(st.session_state.lat), step=0.5, key="in_lat")
+        st.number_input("Longitude", min_value=-180.0, max_value=180.0, value=float(st.session_state.lon), step=0.5, key="in_lon")
         st.button("Use these coordinates", on_click=on_manual_coords, **STRETCH)
 
     st.divider()
@@ -544,8 +606,7 @@ with col_map:
     has_sel = st.session_state.has_selected
 
     if view_mode == "🌍 3D Globe":
-        globe_view = st.fragment(run_every=None if has_sel else SPIN_INTERVAL)(render_globe)
-        globe_view(var_code)
+        render_globe(var_code)
     else:
         m = folium.Map(
             location=[lat_c, lon_c],
