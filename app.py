@@ -254,18 +254,69 @@ with st.sidebar:
 # --- Map -----------------------------------------------------------------
 col_map, col_info = st.columns([2, 1])
 with col_map:
-    m = folium.Map(location=[st.session_state.lat, st.session_state.lon],
-                   zoom_start=st.session_state.zoom)
-    folium.Marker(
-        [st.session_state.lat, st.session_state.lon],
-        tooltip=f"Selected: {fmt_coords(st.session_state.lat, st.session_state.lon)}",
+    m = folium.Map(
+        location=[st.session_state.lat, st.session_state.lon],
+        zoom_start=st.session_state.zoom,
+        tiles=None,
+        control_scale=True,
+    )
+
+    # 1. Clean Light Map (great for borders & text)
+    folium.TileLayer(
+        tiles="CartoDB positron",
+        name="Clean Light Map",
+        overlay=False,
+        control=True,
     ).add_to(m)
+
+    # 2. Satellite Imagery View (default for Earth Science look)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri, Maxar, Earthstar Geographics",
+        name="Satellite Imagery",
+        overlay=False,
+        control=True,
+    ).add_to(m)
+
+    # Subtle country borders & city labels over satellite imagery
+    folium.TileLayer(
+        tiles="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png",
+        attr="CartoDB",
+        name="Place Labels",
+        overlay=True,
+        control=True,
+    ).add_to(m)
+
+    # Draw approximate MERRA-2 grid cell footprint (0.5° lat x 0.625° lon)
+    lat_c, lon_c = st.session_state.lat, st.session_state.lon
+    grid_bounds = [
+        [lat_c - 0.25, lon_c - 0.3125],
+        [lat_c + 0.25, lon_c + 0.3125],
+    ]
+    folium.Rectangle(
+        bounds=grid_bounds,
+        color="#EF553B",
+        weight=2,
+        fill=True,
+        fill_color="#EF553B",
+        fill_opacity=0.15,
+        tooltip="Approximate NASA MERRA-2 Grid Cell (~0.5° × 0.625°)",
+    ).add_to(m)
+
+    # Custom target marker
+    folium.Marker(
+        [lat_c, lon_c],
+        tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
+        icon=folium.Icon(color="red", icon="crosshairs", prefix="fa"),
+    ).add_to(m)
+
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
 
     # Only return clicks, so panning/zooming doesn't trigger reruns or recentre the map
     try:
-        map_data = st_folium(m, height=350, use_container_width=True, returned_objects=["last_clicked"])
+        map_data = st_folium(m, height=380, use_container_width=True, returned_objects=["last_clicked"])
     except TypeError:
-        map_data = st_folium(m, height=350, width=700, returned_objects=["last_clicked"])
+        map_data = st_folium(m, height=380, width=700, returned_objects=["last_clicked"])
 
     if map_data and map_data.get("last_clicked"):
         click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
