@@ -29,8 +29,8 @@ GIOVANNI_CSV = APP_DIR / "giovanni_svalbard_validation.csv"
 st.markdown(
     """
     <style>
-    .block-container {
-        padding-top: 1.4rem;
+.block-container {
+        padding-top: 3.6rem;
         padding-bottom: 2.5rem;
     }
 
@@ -40,6 +40,7 @@ st.markdown(
         border: 1px solid rgba(99, 102, 241, 0.35);
         border-radius: 16px;
         padding: 1.35rem 1.75rem;
+        margin-top: 0.5rem;
         margin-bottom: 1.25rem;
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
     }
