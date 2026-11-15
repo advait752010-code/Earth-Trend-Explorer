@@ -137,10 +137,16 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
         raise RuntimeError(f"The NASA POWER service could not be reached ({last_err}). "
                            "Please try again in a moment.")
 
+    # Check if NASA POWER returned structural error messages in JSON
+    if "messages" in payload and payload["messages"]:
+        msgs = [str(m) for m in payload["messages"]]
+        if any("error" in m.lower() or "invalid" in m.lower() for m in msgs):
+            raise RuntimeError(f"NASA POWER API message: {' '.join(msgs)}")
+
     try:
         raw = payload["properties"]["parameter"][param]
     except (KeyError, TypeError):
-        raise RuntimeError("NASA POWER returned an unexpected response for this location/variable.")
+        raise RuntimeError("NASA POWER returned an unexpected response structure for this location/variable.")
 
     records = []
     for ym, val in raw.items():
@@ -193,7 +199,6 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
     resid = y - fitted
 
     mk_res = mk.hamed_rao_modification_test(y)
-    # Safely extract p-value across pymannkendall versions
     p_val = getattr(mk_res, "p", getattr(mk_res, "p_value", 0.05))
 
     rng = np.random.default_rng(seed)
@@ -240,6 +245,10 @@ st.session_state.setdefault("zoom", 3)
 st.session_state.setdefault("last_click", None)
 st.session_state.setdefault("preset", "Mumbai Coast, India")
 
+# Apply pending preset update BEFORE the sidebar widget is instantiated
+if "pending_preset" in st.session_state:
+    st.session_state["preset"] = st.session_state.pop("pending_preset")
+
 
 def on_preset_change():
     selected_preset = st.session_state["preset"]
@@ -269,6 +278,12 @@ with st.sidebar:
 
     st.header("2. Quick-Jump Regions")
     st.selectbox("Jump to a Region", list(PRESETS.keys()), key="preset", on_change=on_preset_change)
+
+    st.divider()
+    if st.button("🔄 Clear App Cache"):
+        st.cache_data.clear()
+        st.success("Cache cleared successfully!")
+        st.rerun()
 
     with st.expander("ℹ️ How the analysis works"):
         st.markdown(
@@ -354,13 +369,12 @@ with col_map:
             st.session_state.lon = round(wrap_lon(click[1]), 4)
             st.session_state.zoom = max(st.session_state.zoom, 5)
 
-            # Check if clicked point matches any preset
             matched_preset = "Custom (Click Map)"
             for p_name, p_coords in PRESETS.items():
                 if p_coords and abs(p_coords[0] - click[0]) < 0.5 and abs(p_coords[1] - wrap_lon(click[1])) < 0.5:
                     matched_preset = p_name
                     break
-            st.session_state["preset"] = matched_preset
+            st.session_state["pending_preset"] = matched_preset
             st.rerun()
 
 with col_info:
@@ -423,7 +437,7 @@ elif state == "borderline":
     )
 else:
     st.info(
-        f"➖ **No statistically significant trend** (p = {res['mk_p']:.4f}). Changes at this location "
+        f"**No statistically significant trend** (p = {res['mk_p']:.4f}). Changes at this location "
         "are within natural variability for the selected period."
     )
 
