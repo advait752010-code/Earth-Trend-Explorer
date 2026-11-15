@@ -12,12 +12,11 @@ from scipy import stats
 from streamlit_folium import st_folium
 
 st.set_page_config(
-    page_title="NASA Earth Trend Explorer",
+    page_title="Climate Signal | NASA Earth Trend Explorer",
     page_icon="🌍",
     layout="wide",
 )
 
-# Newer Streamlit versions replace use_container_width with width="stretch"
 NEW_WIDTH_API = Version(st.__version__) >= Version("1.50.0")
 STRETCH = {"width": "stretch"} if NEW_WIDTH_API else {"use_container_width": True}
 
@@ -68,7 +67,7 @@ VARIABLES = {
 
 SVALBARD_NAME = "Arctic (Svalbard, Norway)"
 PRESETS = {
-    "Custom (Click Map)": None,
+    "Custom (Click Map/Globe)": None,
     "Amazon Rainforest (Manaus)": (-3.12, -60.02),
     "Sahara Desert (Tamanrasset)": (22.79, 5.52),
     "Mumbai Coast, India": (19.07, 72.87),
@@ -109,6 +108,87 @@ def grid_cell(lat, lon, var_code):
     return [[south, c_lon - dlon / 2], [north, c_lon + dlon / 2]], label
 
 
+@st.cache_data(show_spinner=False)
+def globe_click_mesh(step=2):
+    """Create a 2-degree global lat/lon mesh so any click on the 3D globe selects coordinates."""
+    lats = np.arange(-88, 89, step)
+    lons = np.arange(-180, 180, step)
+    lon_grid, lat_grid = np.meshgrid(lons, lats)
+    return lat_grid.ravel(), lon_grid.ravel()
+
+
+def build_3d_globe(lat_c, lon_c, var_code):
+    """Build an interactive 3D orthographic globe with click selection and MERRA-2 cell footprint."""
+    g_lats, g_lons = globe_click_mesh(step=2)
+    bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
+    south, west = bounds[0]
+    north, east = bounds[1]
+
+    fig = go.Figure()
+
+    # 1. Invisible clickable global mesh (lets users click anywhere on the spinning globe)
+    fig.add_trace(go.Scattergeo(
+        lat=g_lats,
+        lon=g_lons,
+        mode="markers",
+        marker=dict(size=7, opacity=0.001, color="#ffffff"),
+        hovertemplate="Click to analyze: %{lat:.1f}°, %{lon:.1f}°<extra></extra>",
+        showlegend=False,
+    ))
+
+    # 2. Approximate NASA MERRA-2 / CERES grid cell footprint on the 3D globe
+    fig.add_trace(go.Scattergeo(
+        lat=[south, north, north, south, south],
+        lon=[west, west, east, east, west],
+        mode="lines",
+        line=dict(color="#EF553B", width=2),
+        fill="toself",
+        fillcolor="rgba(239, 85, 59, 0.25)",
+        hoverinfo="text",
+        text=cell_label,
+        showlegend=False,
+    ))
+
+    # 3. Target crosshair marker
+    fig.add_trace(go.Scattergeo(
+        lat=[lat_c],
+        lon=[lon_c],
+        mode="markers",
+        marker=dict(size=12, color="#EF553B", symbol="circle-cross",
+                    line=dict(color="white", width=1.5)),
+        hovertemplate=f"Target: {fmt_coords(lat_c, lon_c)}<extra></extra>",
+        showlegend=False,
+    ))
+
+    fig.update_geos(
+        projection_type="orthographic",
+        projection_rotation=dict(lat=lat_c, lon=lon_c, roll=0),
+        showland=True,
+        landcolor="rgb(52, 84, 58)",
+        showocean=True,
+        oceancolor="rgb(15, 42, 74)",
+        showlakes=True,
+        lakecolor="rgb(22, 60, 102)",
+        showrivers=False,
+        showcountries=True,
+        countrycolor="rgba(255, 255, 255, 0.45)",
+        countrywidth=0.7,
+        showcoastlines=True,
+        coastlinecolor="rgba(255, 255, 255, 0.7)",
+        coastlinewidth=0.8,
+        bgcolor="rgba(0,0,0,0)",
+    )
+
+    fig.update_layout(
+        height=390,
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        clickmode="event+select",
+        uirevision="globe_view",
+    )
+    return fig
+
+
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def fetch_nasa_data(lat, lon, param, start_year, end_year):
     """Download monthly NASA POWER data and compute deseasonalized anomalies."""
@@ -128,7 +208,6 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
         try:
             r = requests.get(url, params=params, timeout=30)
             if 400 <= r.status_code < 500:
-                # Client error: retrying will not help
                 raise RuntimeError(f"NASA POWER rejected the request (HTTP {r.status_code}). "
                                    "Try a different location, variable or period.")
             r.raise_for_status()
@@ -142,7 +221,6 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
         raise RuntimeError(f"The NASA POWER service could not be reached ({last_err}). "
                            "Please try again in a moment.")
 
-    # NASA POWER can report problems in a "messages" list
     msgs = [str(m) for m in (payload.get("messages") or [])]
     if any("error" in m.lower() or "invalid" in m.lower() for m in msgs):
         raise RuntimeError(f"NASA POWER API message: {' '.join(msgs)}")
@@ -154,7 +232,6 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
 
     records = []
     for ym, val in raw.items():
-        # '13' = annual summary; values <= -990 are NASA's missing-data fill (-999)
         if ym.endswith("13") or val is None or float(val) <= -990:
             continue
         date = pd.to_datetime(ym, format="%Y%m")
@@ -165,7 +242,7 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
                          "(for example, soil wetness over open ocean). Try a land point.")
 
     df = pd.DataFrame(records).sort_values("Date").reset_index(drop=True)
-    df["t"] = (df["Year"] - df["Year"].min()) * 12 + (df["Month"] - 1)  # months since first record
+    df["t"] = (df["Year"] - df["Year"].min()) * 12 + (df["Month"] - 1)
     df["Anomaly"] = df["Value"] - df.groupby("Month")["Value"].transform("mean")
     return df
 
@@ -189,12 +266,7 @@ def load_giovanni_validation():
 
 
 def compare_with_giovanni(val_df, power_df):
-    """Compare NASA POWER monthly air temperature with a Giovanni T2M export.
-
-    Returns (merged_dataframe, metrics) on success or (None, message) otherwise.
-    Only temperature (T2M) is compared quantitatively, because Giovanni and POWER
-    can use different units for other variables.
-    """
+    """Compare NASA POWER monthly air temperature with a Giovanni T2M export."""
     tcol = val_df.columns[0]
     num_cols = [c for c in val_df.columns[1:] if pd.api.types.is_numeric_dtype(val_df[c])]
     if not num_cols:
@@ -211,7 +283,7 @@ def compare_with_giovanni(val_df, power_df):
     }).dropna()
     if g.empty:
         return None, "The Giovanni file's time column could not be read."
-    if g["Giovanni"].mean() > 150:      # Giovanni reports MERRA-2 temperature in kelvin
+    if g["Giovanni"].mean() > 150:
         g["Giovanni"] = g["Giovanni"] - 273.15
 
     merged = (power_df[["Date", "Value"]].rename(columns={"Value": "POWER"})
@@ -238,12 +310,7 @@ def compare_with_giovanni(val_df, power_df):
 # ----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def analyze_trend(df, n_boot=300, block=12, seed=42):
-    """Robust trend analysis for autocorrelated monthly anomalies.
-
-    - Trend size: Theil-Sen slope (robust to outliers).
-    - Significance: Hamed-Rao modified Mann-Kendall test (corrects for serial correlation).
-    - Uncertainty: moving-block bootstrap of the Theil-Sen slope (95% interval).
-    """
+    """Robust trend analysis for autocorrelated monthly anomalies."""
     y = df["Anomaly"].to_numpy(dtype=float)
     t = df["t"].to_numpy(dtype=float)
     n = len(y)
@@ -265,7 +332,7 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
     ci_low, ci_high = np.percentile(boots, [2.5, 97.5])
 
     return {
-        "slope_decade": slope * 120,                 # per month -> per decade
+        "slope_decade": slope * 120,
         "ci_low": ci_low * 120,
         "ci_high": ci_high * 120,
         "total_change": slope * (t.max() - t.min()),
@@ -276,7 +343,7 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
 
 def annual_means(df):
     g = df.groupby("Year")["Value"].agg(["mean", "count"]).reset_index()
-    g = g[g["count"] == 12]  # complete years only so the seasonal cycle cancels out
+    g = g[g["count"] == 12]
     return g[["Year", "mean"]].rename(columns={"mean": "Annual Mean"})
 
 
@@ -297,9 +364,9 @@ st.session_state.setdefault("lat", 19.07)
 st.session_state.setdefault("lon", 72.87)
 st.session_state.setdefault("zoom", 3)
 st.session_state.setdefault("last_click", None)
+st.session_state.setdefault("last_globe_click", None)
 st.session_state.setdefault("preset", "Mumbai Coast, India")
 
-# Apply a pending preset label BEFORE the sidebar widget is instantiated
 if "pending_preset" in st.session_state:
     st.session_state["preset"] = st.session_state.pop("pending_preset")
 
@@ -314,10 +381,10 @@ def on_preset_change():
 # ----------------------------------------------------------------------------
 # 5. UI layout
 # ----------------------------------------------------------------------------
-st.title("🌍 NASA Earth Science Trend Explorer")
+st.title("🌍 Climate Signal — NASA Earth Science Trend Explorer")
 st.markdown(
-    "Click anywhere on the map (or pick a preset region), choose a NASA variable, and test whether "
-    "environmental change is **statistically significant** or just natural variability."
+    "Spin the 3D globe or click anywhere on the 2D map (or pick a preset region), choose a NASA "
+    "variable, and test whether environmental change is **statistically significant** or natural variability."
 )
 
 with st.sidebar:
@@ -334,7 +401,7 @@ with st.sidebar:
 
     st.divider()
     if st.button("🔄 Clear cached data"):
-        st.cache_data.clear()  # this run continues and re-fetches fresh data below
+        st.cache_data.clear()
         st.toast("Cache cleared. Fetching fresh data.")
 
     with st.expander("ℹ️ How the analysis works"):
@@ -351,77 +418,109 @@ with st.sidebar:
 v_meta = VARIABLES[var_code]
 unit = v_meta["unit"]
 
-# --- Map & info columns ----------------------------------------------------
+# --- Map / Globe & info columns --------------------------------------------
 col_map, col_info = st.columns([2, 1])
 with col_map:
-    lat_c, lon_c = st.session_state.lat, st.session_state.lon
-
-    m = folium.Map(
-        location=[lat_c, lon_c],
-        zoom_start=st.session_state.zoom,
-        tiles=None,
-        control_scale=True,
+    view_mode = st.radio(
+        "Spatial View",
+        options=["🌍 3D Interactive Globe", "🗺️ 2D Satellite & Street Map"],
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    # Bundle satellite imagery + place labels into a single exclusive base layer
-    satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
-    folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri, Maxar, Earthstar Geographics",
-    ).add_to(satellite_group)
-    folium.TileLayer(
-        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri",
-    ).add_to(satellite_group)
-    satellite_group.add_to(m)
+    lat_c, lon_c = st.session_state.lat, st.session_state.lon
 
-    # Street & terrain map already includes its own native labels
-    folium.TileLayer(
-        tiles="OpenStreetMap",
-        name="Street & Terrain Map",
-        overlay=False,
-        control=True,
-        show=False,
-    ).add_to(m)
+    if view_mode == "🌍 3D Interactive Globe":
+        globe_fig = build_3d_globe(lat_c, lon_c, var_code)
+        try:
+            selection = st.plotly_chart(
+                globe_fig,
+                on_select="rerun",
+                selection_mode="points",
+                key="interactive_globe",
+                **STRETCH,
+            )
+        except TypeError:
+            # Fallback if Streamlit version does not support on_select
+            st.plotly_chart(globe_fig, **STRETCH)
+            selection = None
 
-    bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
-    folium.Rectangle(
-        bounds=bounds,
-        color="#EF553B",
-        weight=2,
-        fill=True,
-        fill_color="#EF553B",
-        fill_opacity=0.15,
-        tooltip=cell_label,
-    ).add_to(m)
+        st.caption("💡 Drag to spin the globe, scroll to zoom, and click anywhere to sample a location.")
 
-    folium.Marker(
-        [lat_c, lon_c],
-        tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
-        icon=folium.Icon(color="red", icon="crosshairs", prefix="fa"),
-    ).add_to(m)
+        if selection and selection.get("selection", {}).get("points"):
+            pt = selection["selection"]["points"][0]
+            if "lat" in pt and "lon" in pt:
+                g_click = (round(float(pt["lat"]), 2), round(wrap_lon(float(pt["lon"])), 2))
+                if g_click != st.session_state.last_globe_click:
+                    st.session_state.last_globe_click = g_click
+                    st.session_state.lat, st.session_state.lon = g_click
+                    st.session_state.zoom = max(st.session_state.zoom, 5)
+                    st.session_state["pending_preset"] = "Custom (Click Map/Globe)"
+                    st.rerun()
+    else:
+        m = folium.Map(
+            location=[lat_c, lon_c],
+            zoom_start=st.session_state.zoom,
+            tiles=None,
+            control_scale=True,
+        )
 
-    folium.LayerControl(position="topright", collapsed=True).add_to(m)
+        # Bundle satellite imagery + place labels into a single exclusive base layer
+        satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
+        folium.TileLayer(
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri, Maxar, Earthstar Geographics",
+        ).add_to(satellite_group)
+        folium.TileLayer(
+            tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri",
+        ).add_to(satellite_group)
+        satellite_group.add_to(m)
 
-    # Only return clicks, so panning/zooming doesn't trigger reruns or recentre the map
-    try:
-        map_data = st_folium(m, height=380, use_container_width=True,
-                             returned_objects=["last_clicked"], key="interactive_map")
-    except TypeError:
-        map_data = st_folium(m, height=380, width=700,
-                             returned_objects=["last_clicked"], key="interactive_map")
+        # Street & terrain map already includes its own native labels
+        folium.TileLayer(
+            tiles="OpenStreetMap",
+            name="Street & Terrain Map",
+            overlay=False,
+            control=True,
+            show=False,
+        ).add_to(m)
 
-    if map_data and map_data.get("last_clicked"):
-        click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
-        # Act only on NEW clicks: a stale click must never override a preset choice
-        if click != st.session_state.last_click:
-            st.session_state.last_click = click
-            st.session_state.lat = click[0]
-            st.session_state.lon = round(wrap_lon(click[1]), 4)
-            st.session_state.zoom = max(st.session_state.zoom, 5)
-            # A clicked point is a custom location, never a preset
-            st.session_state["pending_preset"] = "Custom (Click Map)"
-            st.rerun()
+        bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
+        folium.Rectangle(
+            bounds=bounds,
+            color="#EF553B",
+            weight=2,
+            fill=True,
+            fill_color="#EF553B",
+            fill_opacity=0.15,
+            tooltip=cell_label,
+        ).add_to(m)
+
+        folium.Marker(
+            [lat_c, lon_c],
+            tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
+            icon=folium.Icon(color="red", icon="crosshairs", prefix="fa"),
+        ).add_to(m)
+
+        folium.LayerControl(position="topright", collapsed=True).add_to(m)
+
+        try:
+            map_data = st_folium(m, height=380, use_container_width=True,
+                                 returned_objects=["last_clicked"], key="interactive_map")
+        except TypeError:
+            map_data = st_folium(m, height=380, width=700,
+                                 returned_objects=["last_clicked"], key="interactive_map")
+
+        if map_data and map_data.get("last_clicked"):
+            click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
+            if click != st.session_state.last_click:
+                st.session_state.last_click = click
+                st.session_state.lat = click[0]
+                st.session_state.lon = round(wrap_lon(click[1]), 4)
+                st.session_state.zoom = max(st.session_state.zoom, 5)
+                st.session_state["pending_preset"] = "Custom (Click Map/Globe)"
+                st.rerun()
 
 with col_info:
     st.subheader("Selected Target")
@@ -458,7 +557,7 @@ if len(df) < n_expected:
 with st.spinner("Running trend statistics..."):
     try:
         res = analyze_trend(df)
-    except Exception as e:  # e.g. constant series
+    except Exception as e:
         st.error(f"The trend test could not be computed for this series ({e}).")
         st.stop()
 
@@ -492,7 +591,6 @@ else:
     )
 
 # --- Charts & validation tabs ----------------------------------------------
-# The Giovanni check was prepared for the Svalbard preset location only
 is_svalbard = (abs(st.session_state.lat - PRESETS[SVALBARD_NAME][0]) < 0.01
                and abs(st.session_state.lon - PRESETS[SVALBARD_NAME][1]) < 0.01)
 
