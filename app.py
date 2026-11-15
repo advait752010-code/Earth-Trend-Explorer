@@ -328,13 +328,15 @@ def build_3d_globe(lat_c, lon_c, var_code, auto_spin=False):
         bgcolor="rgba(0,0,0,0)",
     )
 
+    if frames:
+        fig.frames = frames
+
     fig.update_layout(
         height=400,
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="rgba(6, 11, 25, 0.85)",
         clickmode="event+select",
         uirevision="globe_view" if not auto_spin else f"globe_spin_{lat_c}_{lon_c}",
-        frames=frames,
         updatemenus=updatemenus,
     )
     return fig
