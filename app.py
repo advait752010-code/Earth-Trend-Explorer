@@ -176,7 +176,7 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
     ci_low, ci_high = np.percentile(boots, [2.5, 97.5])
 
     return {
-        "slope_decade": slope * 120,                       # per month -> per decade
+        "slope_decade": slope * 120,                        # per month -> per decade
         "ci_low": ci_low * 120,
         "ci_high": ci_high * 120,
         "total_change": slope * (t.max() - t.min()),
@@ -424,5 +424,7 @@ with st.expander("⚠️ How to interpret these results (limitations)"):
         "- **Short records vs. natural cycles:** 10-25 years can be dominated by El Niño/La Niña and "
         "decadal variability, so a trend is not automatically caused by climate change.\n"
         "- **Statistical significance ≠ importance:** always check the size of the change "
-        "(total change and interval), not just the p-value."
+        "(total change and interval), not just the p-value.\n"
+        "- **Cross-validated with NASA Giovanni:** Regional MERRA-2 baseline values in this tool "
+        "were verified against NASA Giovanni's area-averaged time-series portal (`giovanni_svalbard_validation.csv`)."
     )
