@@ -179,9 +179,9 @@ def build_globe(focus_lat, focus_lon, focus_nonce):
         lat=g_lats,
         lon=g_lons,
         mode="markers",
-        marker=dict(size=24, opacity=0.001, color="#ffffff"),
-        selected=dict(marker=dict(opacity=0.001)),
-        unselected=dict(marker=dict(opacity=0.001)),
+        marker=dict(size=26, opacity=0.01, color="#ffffff"),
+        selected=dict(marker=dict(opacity=0.01)),
+        unselected=dict(marker=dict(opacity=0.01)),
         hovertemplate="Click to select: %{lat:.0f}°, %{lon:.0f}°<extra></extra>",
         showlegend=False,
     ))
@@ -200,7 +200,7 @@ def build_globe(focus_lat, focus_lon, focus_nonce):
         height=390,
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="#050914",
-        clickmode="event",
+        clickmode="event+select",
         dragmode=False,
         uirevision=f"globe_{focus_nonce}",
     )
@@ -276,6 +276,7 @@ def inject_globle_spin(focus_nonce, focus_lat, focus_lon, snap_to_focus):
 
                 let isDragging = false;
                 let isRelayouting = false;
+                let pauseUntil = 0;
                 let lastTime = performance.now();
                 let lastFrame = 0;
 
@@ -304,11 +305,13 @@ def inject_globle_spin(focus_nonce, focus_lat, focus_lon, snap_to_focus):
 
                 const onStartDrag = () => {{
                     isDragging = true;
+                    pauseUntil = performance.now() + 350;
                 }};
 
                 const onEndDrag = () => {{
                     if (!isDragging) return;
                     isDragging = false;
+                    pauseUntil = performance.now() + 250;
                     syncFromPlot();
                     lastTime = performance.now();
                 }};
@@ -350,7 +353,7 @@ def inject_globle_spin(focus_nonce, focus_lat, focus_lon, snap_to_focus):
                     const dt = Math.min((now - lastTime) / 1000, 0.05);
                     lastTime = now;
 
-                    if (!isDragging) {{
+                    if (!isDragging && now >= pauseUntil) {{
                         state.targetLon += 38.0 * dt;
                         state.lon += (state.targetLon - state.lon) * 0.18;
                         state.lat += (state.targetLat - state.lat) * 0.18;
@@ -638,6 +641,88 @@ def render_globe():
         break
 
 
+def render_2d_map(var_code):
+    lat_c, lon_c = st.session_state.lat, st.session_state.lon
+    has_sel = st.session_state.has_selected
+
+    m = folium.Map(
+        location=[lat_c, lon_c],
+        zoom_start=st.session_state.zoom,
+        tiles=None,
+        control_scale=True,
+    )
+    m.get_root().html.add_child(folium.Element(
+        """
+        <style>
+        .leaflet-control-scale-line {
+            box-sizing: content-box !important;
+            white-space: nowrap !important;
+            font-size: 11px !important;
+            line-height: 1.2 !important;
+            padding: 2px 6px !important;
+        }
+        </style>
+        """
+    ))
+
+    satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri, Maxar, Earthstar Geographics",
+    ).add_to(satellite_group)
+    folium.TileLayer(
+        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
+    ).add_to(satellite_group)
+    satellite_group.add_to(m)
+
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="Street & Terrain Map",
+        overlay=False,
+        control=True,
+        show=False,
+    ).add_to(m)
+
+    if has_sel:
+        bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
+        folium.Rectangle(
+            bounds=bounds,
+            color="#EF553B",
+            weight=2,
+            fill=True,
+            fill_color="#EF553B",
+            fill_opacity=0.15,
+            tooltip=cell_label,
+        ).add_to(m)
+        folium.Marker(
+            [lat_c, lon_c],
+            tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
+            icon=folium.Icon(color="red", icon="crosshairs", prefix="fa"),
+        ).add_to(m)
+
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
+
+    map_data = st_folium(
+        m,
+        height=394,
+        width=None,
+        returned_objects=["last_clicked"],
+        key="interactive_map",
+    )
+
+    if map_data and map_data.get("last_clicked"):
+        click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
+        if click != st.session_state.last_click:
+            st.session_state.last_click = click
+            set_location(*click)
+            st.session_state["pending_preset"] = NO_PRESET
+            st.session_state["globe_focus_nonce"] += 1
+            st.session_state["globe_snap_focus"] = True
+            st.session_state["last_globe_sel"] = None
+            st.rerun()
+
+
 st.markdown(
     """
 <div class="hero-box">
@@ -695,87 +780,10 @@ with col_map:
         label_visibility="collapsed",
     )
 
-    lat_c, lon_c = st.session_state.lat, st.session_state.lon
-    has_sel = st.session_state.has_selected
-
     if view_mode == "🌍 3D Globe":
         render_globe()
     else:
-        m = folium.Map(
-            location=[lat_c, lon_c],
-            zoom_start=st.session_state.zoom,
-            tiles=None,
-            control_scale=True,
-        )
-        m.get_root().html.add_child(folium.Element(
-            """
-            <style>
-            .leaflet-control-scale-line {
-                box-sizing: content-box !important;
-                white-space: nowrap !important;
-                font-size: 11px !important;
-                line-height: 1.2 !important;
-                padding: 2px 6px !important;
-            }
-            </style>
-            """
-        ))
-
-        satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
-        folium.TileLayer(
-            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            attr="Esri, Maxar, Earthstar Geographics",
-        ).add_to(satellite_group)
-        folium.TileLayer(
-            tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-            attr="Esri",
-        ).add_to(satellite_group)
-        satellite_group.add_to(m)
-
-        folium.TileLayer(
-            tiles="OpenStreetMap",
-            name="Street & Terrain Map",
-            overlay=False,
-            control=True,
-            show=False,
-        ).add_to(m)
-
-        if has_sel:
-            bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
-            folium.Rectangle(
-                bounds=bounds,
-                color="#EF553B",
-                weight=2,
-                fill=True,
-                fill_color="#EF553B",
-                fill_opacity=0.15,
-                tooltip=cell_label,
-            ).add_to(m)
-            folium.Marker(
-                [lat_c, lon_c],
-                tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
-                icon=folium.Icon(color="red", icon="crosshairs", prefix="fa"),
-            ).add_to(m)
-
-        folium.LayerControl(position="topright", collapsed=True).add_to(m)
-
-        try:
-            map_data = st_folium(m, height=394, use_container_width=True,
-                                 returned_objects=["last_clicked"], key="interactive_map")
-        except TypeError:
-            map_data = st_folium(m, height=394, width=700,
-                                 returned_objects=["last_clicked"], key="interactive_map")
-
-        if map_data and map_data.get("last_clicked"):
-            click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
-            if click != st.session_state.last_click:
-                st.session_state.last_click = click
-                set_location(*click)
-                st.session_state["pending_preset"] = NO_PRESET
-                st.session_state["globe_focus_nonce"] += 1
-                st.session_state["globe_snap_focus"] = True
-                st.session_state["last_globe_sel"] = None
-                st.rerun()
+        render_2d_map(var_code)
 
 with col_info:
     coord_text = fmt_coords(st.session_state.lat, st.session_state.lon)
