@@ -163,7 +163,7 @@ def grid_cell(lat, lon, var_code):
 
 
 @st.cache_data(show_spinner=False)
-def globe_click_mesh(step=8):
+def globe_click_mesh(step=6):
     lats = np.arange(-84, 85, step)
     lons = np.arange(-180, 180, step)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
@@ -171,7 +171,7 @@ def globe_click_mesh(step=8):
 
 
 @st.cache_data(show_spinner=False)
-def build_globe(lat_c, lon_c, var_code, has_selected, nonce):
+def build_globe(focus_lat, focus_lon, focus_nonce):
     g_lats, g_lons = globe_click_mesh()
     fig = go.Figure()
 
@@ -186,37 +186,9 @@ def build_globe(lat_c, lon_c, var_code, has_selected, nonce):
         showlegend=False,
     ))
 
-    if has_selected:
-        bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
-        south, west = bounds[0]
-        north, east = bounds[1]
-        fig.add_trace(go.Scattergeo(
-            lat=[south, north, north, south, south],
-            lon=[west, west, east, east, west],
-            mode="lines",
-            line=dict(color="#EF553B", width=2.2),
-            fill="toself",
-            fillcolor="rgba(239, 85, 59, 0.25)",
-            hoverinfo="text",
-            text=cell_label,
-            showlegend=False,
-        ))
-        fig.add_trace(go.Scattergeo(
-            lat=[lat_c],
-            lon=[lon_c],
-            mode="markers",
-            marker=dict(size=13, color="#EF553B", symbol="circle-cross",
-                        line=dict(color="white", width=1.8)),
-            unselected=dict(marker=dict(opacity=1)),
-            hovertemplate=f"Target: {fmt_coords(lat_c, lon_c)}<extra></extra>",
-            showlegend=False,
-        ))
-
-    rotation = dict(lat=lat_c * 0.65, lon=lon_c, roll=0) if has_selected else dict(lat=18, lon=lon_c, roll=0)
-
     fig.update_geos(
         projection_type="orthographic",
-        projection_rotation=rotation,
+        projection_rotation=dict(lat=focus_lat * 0.65, lon=focus_lon, roll=0),
         showland=True, landcolor="rgb(40, 74, 54)",
         showocean=True, oceancolor="rgb(10, 30, 58)",
         showlakes=True, lakecolor="rgb(16, 46, 86)",
@@ -228,44 +200,62 @@ def build_globe(lat_c, lon_c, var_code, has_selected, nonce):
         height=390,
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="#050914",
-        clickmode="event+select",
+        clickmode="event",
         dragmode=False,
-        uirevision=f"globe_{nonce}",
+        uirevision=f"globe_{focus_nonce}",
     )
     return fig, g_lats, g_lons
 
 
-def inject_globle_spin(active):
+def inject_globle_spin(focus_nonce, focus_lat, focus_lon, snap_to_focus):
     components.html(
         f"""
         <script>
         (function() {{
-            const SHOULD_SPIN = {"true" if active else "false"};
-            const doc = window.parent.document;
-            let rafId = null;
-            let autoRotate = SHOULD_SPIN;
-            let isDragging = false;
-            let isRelayouting = false;
-            let lastTime = performance.now();
-            let lastFrame = 0;
+            const FOCUS_NONCE = {int(focus_nonce)};
+            const FOCUS_LAT = {float(focus_lat) * 0.65};
+            const FOCUS_LON = {float(focus_lon)};
+            const SNAP_TO_FOCUS = {"true" if snap_to_focus else "false"};
+            const win = window.parent;
+            const doc = win.document;
+
+            win.__globleState = win.__globleState || {{
+                lon: FOCUS_LON,
+                lat: FOCUS_LAT,
+                targetLon: FOCUS_LON,
+                targetLat: FOCUS_LAT,
+                lastNonce: -1,
+                rafId: null
+            }};
+            const state = win.__globleState;
+
+            if (state.lastNonce !== FOCUS_NONCE) {{
+                state.lastNonce = FOCUS_NONCE;
+                if (SNAP_TO_FOCUS) {{
+                    state.targetLon = FOCUS_LON;
+                    state.targetLat = FOCUS_LAT;
+                    state.lon = FOCUS_LON;
+                    state.lat = FOCUS_LAT;
+                }}
+            }}
 
             function findGlobeContext() {{
                 const topPlots = doc.querySelectorAll('.js-plotly-plot');
                 for (const p of topPlots) {{
                     if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {{
-                        return {{ plot: p, plotly: window.parent.Plotly }};
+                        return {{ plot: p, plotly: win.Plotly }};
                     }}
                 }}
                 const iframes = doc.querySelectorAll('iframe');
                 for (const frame of iframes) {{
                     try {{
-                        const win = frame.contentWindow;
-                        const fDoc = frame.contentDocument || (win && win.document);
-                        if (!fDoc || !win || !win.Plotly) continue;
+                        const fWin = frame.contentWindow;
+                        const fDoc = frame.contentDocument || (fWin && fWin.document);
+                        if (!fDoc || !fWin || !fWin.Plotly) continue;
                         const fPlots = fDoc.querySelectorAll('.js-plotly-plot');
                         for (const p of fPlots) {{
                             if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {{
-                                return {{ plot: p, plotly: win.Plotly }};
+                                return {{ plot: p, plotly: fWin.Plotly }};
                             }}
                         }}
                     }} catch (e) {{}}
@@ -276,7 +266,7 @@ def inject_globle_spin(active):
             function attach() {{
                 const ctx = findGlobeContext();
                 if (!ctx) {{
-                    setTimeout(attach, 70);
+                    setTimeout(attach, 50);
                     return;
                 }}
 
@@ -284,28 +274,43 @@ def inject_globle_spin(active):
                 if (plot.dataset.globleBound === '1') return;
                 plot.dataset.globleBound = '1';
 
-                const rot = (plot._fullLayout.geo.projection && plot._fullLayout.geo.projection.rotation) || {{}};
-                let targetLon = typeof rot.lon === 'number' ? rot.lon : 72.87;
-                let currentLon = targetLon;
-                let targetLat = typeof rot.lat === 'number' ? rot.lat : 18;
-                let currentLat = targetLat;
+                let isDragging = false;
+                let isRelayouting = false;
+                let lastTime = performance.now();
+                let lastFrame = 0;
+
+                if (!SNAP_TO_FOCUS && typeof state.lon === 'number') {{
+                    isRelayouting = true;
+                    try {{
+                        plotly.relayout(plot, {{
+                            'geo.projection.rotation.lon': state.lon,
+                            'geo.projection.rotation.lat': state.lat
+                        }});
+                    }} catch (e) {{}}
+                    finally {{ isRelayouting = false; }}
+                }}
+
+                const syncFromPlot = () => {{
+                    const liveRot = (plot._fullLayout && plot._fullLayout.geo && plot._fullLayout.geo.projection && plot._fullLayout.geo.projection.rotation) || {{}};
+                    if (typeof liveRot.lon === 'number') {{
+                        state.lon = liveRot.lon;
+                        state.targetLon = liveRot.lon;
+                    }}
+                    if (typeof liveRot.lat === 'number') {{
+                        state.lat = liveRot.lat;
+                        state.targetLat = liveRot.lat;
+                    }}
+                }};
 
                 const onStartDrag = () => {{
                     isDragging = true;
-                    autoRotate = false;
                 }};
+
                 const onEndDrag = () => {{
                     if (!isDragging) return;
                     isDragging = false;
-                    const liveRot = (plot._fullLayout.geo.projection && plot._fullLayout.geo.projection.rotation) || {{}};
-                    if (typeof liveRot.lon === 'number') {{
-                        targetLon = liveRot.lon;
-                        currentLon = liveRot.lon;
-                    }}
-                    if (typeof liveRot.lat === 'number') {{
-                        targetLat = liveRot.lat;
-                        currentLat = liveRot.lat;
-                    }}
+                    syncFromPlot();
+                    lastTime = performance.now();
                 }};
 
                 ['mousedown', 'pointerdown', 'touchstart'].forEach(evt => {{
@@ -320,37 +325,36 @@ def inject_globle_spin(active):
                         if (isRelayouting || !ev) return;
                         const r = ev['geo.projection.rotation'];
                         if (r && typeof r.lon === 'number') {{
-                            targetLon = r.lon;
-                            currentLon = r.lon;
+                            state.lon = r.lon;
+                            state.targetLon = r.lon;
                         }}
                         if (r && typeof r.lat === 'number') {{
-                            targetLat = r.lat;
-                            currentLat = r.lat;
+                            state.lat = r.lat;
+                            state.targetLat = r.lat;
                         }}
                         if (typeof ev['geo.projection.rotation.lon'] === 'number') {{
-                            targetLon = ev['geo.projection.rotation.lon'];
-                            currentLon = targetLon;
+                            state.lon = ev['geo.projection.rotation.lon'];
+                            state.targetLon = state.lon;
                         }}
                         if (typeof ev['geo.projection.rotation.lat'] === 'number') {{
-                            targetLat = ev['geo.projection.rotation.lat'];
-                            currentLat = targetLat;
+                            state.lat = ev['geo.projection.rotation.lat'];
+                            state.targetLat = state.lat;
                         }}
                     }});
                 }}
 
-                if (!autoRotate) return;
+                if (state.rafId) cancelAnimationFrame(state.rafId);
 
-                lastTime = performance.now();
                 function step(now) {{
-                    if (!autoRotate || !plot.isConnected) return;
+                    if (!plot.isConnected) return;
                     const dt = Math.min((now - lastTime) / 1000, 0.05);
                     lastTime = now;
 
                     if (!isDragging) {{
-                        targetLon += 38.0 * dt;
-                        currentLon += (targetLon - currentLon) * 0.18;
-                        currentLat += (targetLat - currentLat) * 0.18;
-                        const wrappedLon = ((((currentLon + 180) % 360) + 360) % 360) - 180;
+                        state.targetLon += 38.0 * dt;
+                        state.lon += (state.targetLon - state.lon) * 0.18;
+                        state.lat += (state.targetLat - state.lat) * 0.18;
+                        const wrappedLon = ((((state.lon + 180) % 360) + 360) % 360) - 180;
 
                         if (now - lastFrame >= 16) {{
                             lastFrame = now;
@@ -358,19 +362,18 @@ def inject_globle_spin(active):
                             try {{
                                 plotly.relayout(plot, {{
                                     'geo.projection.rotation.lon': wrappedLon,
-                                    'geo.projection.rotation.lat': currentLat
+                                    'geo.projection.rotation.lat': state.lat
                                 }});
                             }} catch (e) {{
-                                autoRotate = false;
                                 return;
                             }} finally {{
                                 isRelayouting = false;
                             }}
                         }}
                     }}
-                    rafId = requestAnimationFrame(step);
+                    state.rafId = requestAnimationFrame(step);
                 }}
-                rafId = requestAnimationFrame(step);
+                state.rafId = requestAnimationFrame(step);
             }}
 
             attach();
@@ -379,6 +382,7 @@ def inject_globle_spin(active):
         """,
         height=0,
     )
+
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def fetch_nasa_data(lat, lon, param, start_year, end_year):
@@ -564,7 +568,8 @@ st.session_state.setdefault("zoom", 3)
 st.session_state.setdefault("has_selected", False)
 st.session_state.setdefault("last_click", None)
 st.session_state.setdefault("last_globe_sel", None)
-st.session_state.setdefault("globe_nonce", 0)
+st.session_state.setdefault("globe_focus_nonce", 0)
+st.session_state.setdefault("globe_snap_focus", True)
 st.session_state.setdefault("preset", NO_PRESET)
 
 if "pending_preset" in st.session_state:
@@ -583,32 +588,34 @@ def on_preset_change():
     if coords is not None:
         set_location(*coords)
         st.session_state["zoom"] = 5
-        st.session_state["globe_nonce"] += 1
+        st.session_state["globe_focus_nonce"] += 1
+        st.session_state["globe_snap_focus"] = True
         st.session_state["last_globe_sel"] = None
 
 
 def on_manual_coords():
     set_location(st.session_state["in_lat"], st.session_state["in_lon"])
     st.session_state["preset"] = NO_PRESET
-    st.session_state["globe_nonce"] += 1
+    st.session_state["globe_focus_nonce"] += 1
+    st.session_state["globe_snap_focus"] = True
     st.session_state["last_globe_sel"] = None
 
 
-def render_globe(var_code):
+def render_globe():
     lat_c, lon_c = st.session_state.lat, st.session_state.lon
-    has_sel = st.session_state.has_selected
-    nonce = st.session_state.globe_nonce
+    focus_nonce = st.session_state.globe_focus_nonce
+    snap_focus = st.session_state.globe_snap_focus
 
-    globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, var_code, has_sel, nonce)
+    globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, focus_nonce)
     event = st.plotly_chart(
         globe_fig,
-        key=f"globe_{nonce}",
+        key="globe_main",
         on_select="rerun",
         selection_mode="points",
         config={"displayModeBar": False, "scrollZoom": True},
         **STRETCH,
     )
-    inject_globle_spin(active=not has_sel)
+    inject_globle_spin(focus_nonce, lat_c, lon_c, snap_focus)
     st.caption("💡 Click anywhere on the globe to select a location, or drag to rotate freely.")
 
     try:
@@ -626,7 +633,7 @@ def render_globe(var_code):
             st.session_state.last_globe_sel = sel
             set_location(*sel)
             st.session_state["pending_preset"] = NO_PRESET
-            st.session_state["globe_nonce"] += 1
+            st.session_state["globe_snap_focus"] = False
             st.rerun()
         break
 
@@ -692,7 +699,7 @@ with col_map:
     has_sel = st.session_state.has_selected
 
     if view_mode == "🌍 3D Globe":
-        render_globe(var_code)
+        render_globe()
     else:
         m = folium.Map(
             location=[lat_c, lon_c],
@@ -765,7 +772,8 @@ with col_map:
                 st.session_state.last_click = click
                 set_location(*click)
                 st.session_state["pending_preset"] = NO_PRESET
-                st.session_state["globe_nonce"] += 1
+                st.session_state["globe_focus_nonce"] += 1
+                st.session_state["globe_snap_focus"] = True
                 st.session_state["last_globe_sel"] = None
                 st.rerun()
 
