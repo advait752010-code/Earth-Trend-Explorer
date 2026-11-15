@@ -347,12 +347,12 @@ def inject_globle_spin(active):
                     lastTime = now;
 
                     if (!isDragging) {{
-                        targetLon += 18.0 * dt;
-                        currentLon += (targetLon - currentLon) * 0.12;
-                        currentLat += (targetLat - currentLat) * 0.12;
+                        targetLon += 38.0 * dt;
+                        currentLon += (targetLon - currentLon) * 0.18;
+                        currentLat += (targetLat - currentLat) * 0.18;
                         const wrappedLon = ((((currentLon + 180) % 360) + 360) % 360) - 180;
 
-                        if (now - lastFrame >= 28) {{
+                        if (now - lastFrame >= 16) {{
                             lastFrame = now;
                             isRelayouting = true;
                             try {{
@@ -379,7 +379,6 @@ def inject_globle_spin(active):
         """,
         height=0,
     )
-
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def fetch_nasa_data(lat, lon, param, start_year, end_year):
