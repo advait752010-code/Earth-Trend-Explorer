@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+
 import folium
 import numpy as np
 import pandas as pd
@@ -642,10 +643,9 @@ with col_map:
             location=[lat_c, lon_c],
             zoom_start=st.session_state.zoom,
             tiles=None,
-            control_scale=False,
+            control_scale=True,
         )
-        folium.plugins.MeasureControl(position="bottomleft") if False else None
-        m.add_child(folium.Element(
+        m.get_root().html.add_child(folium.Element(
             """
             <style>
             .leaflet-control-scale-line {
@@ -658,7 +658,6 @@ with col_map:
             </style>
             """
         ))
-        folium.control.Scale(position="bottomleft", imperial=False, max_width=140).add_to(m)
 
         satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
         folium.TileLayer(
