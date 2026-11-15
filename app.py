@@ -1,4 +1,5 @@
 import time
+
 import folium
 import numpy as np
 import pandas as pd
@@ -74,7 +75,7 @@ ALPHA = 0.05
 
 
 # ----------------------------------------------------------------------------
-# 2. Data access
+# 2. Helpers & data access
 # ----------------------------------------------------------------------------
 def wrap_lon(lon):
     """Map any longitude (folium can return values beyond ±180) into [-180, 180)."""
@@ -84,6 +85,25 @@ def wrap_lon(lon):
 def fmt_coords(lat, lon):
     return (f"{abs(lat):.2f}°{'N' if lat >= 0 else 'S'}, "
             f"{abs(lon):.2f}°{'E' if lon >= 0 else 'W'}")
+
+
+def grid_cell(lat, lon, var_code):
+    """Approximate footprint of the source grid cell containing the selected point.
+
+    MERRA-2 cells are 0.5° lat x 0.625° lon on a fixed grid; the CERES-based solar
+    product is coarser (about 1° x 1°). Both are approximate.
+    """
+    if var_code == "ALLSKY_SFC_SW_DWN":
+        dlat, dlon = 1.0, 1.0
+        label = "Approximate CERES-based solar grid cell (~1° × 1°)"
+    else:
+        dlat, dlon = 0.5, 0.625
+        label = "Approximate NASA MERRA-2 grid cell (~0.5° × 0.625°)"
+    c_lat = round(lat / dlat) * dlat
+    c_lon = round((lon + 180) / dlon) * dlon - 180
+    south = max(c_lat - dlat / 2, -90)
+    north = min(c_lat + dlat / 2, 90)
+    return [[south, c_lon - dlon / 2], [north, c_lon + dlon / 2]], label
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
@@ -97,8 +117,8 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
     params = {
         "parameters": param,
         "community": "AG",
-        "longitude": round(lon, 2),
-        "latitude": round(lat, 2),
+        "longitude": lon,
+        "latitude": lat,
         "start": start_year,
         "end": end_year,
         "format": "JSON",
@@ -108,6 +128,10 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
     for attempt in range(3):
         try:
             r = requests.get(url, params=params, timeout=30)
+            if 400 <= r.status_code < 500:
+                # Client error: retrying will not help
+                raise RuntimeError(f"NASA POWER rejected the request (HTTP {r.status_code}). "
+                                   "Try a different location, variable or period.")
             r.raise_for_status()
             payload = r.json()
             break
@@ -180,7 +204,6 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
         "ci_low": ci_low * 120,
         "ci_high": ci_high * 120,
         "total_change": slope * (t.max() - t.min()),
-        "mk_trend": mk_res.trend,
         "mk_p": float(mk_res.p),
         "trend_line": fitted,
     }
@@ -251,59 +274,61 @@ with st.sidebar:
             "5. **Uncertainty** = 95% interval from a block bootstrap."
         )
 
+v_meta = VARIABLES[var_code]
+unit = v_meta["unit"]
+
 # --- Map -----------------------------------------------------------------
 col_map, col_info = st.columns([2, 1])
 with col_map:
+    lat_c, lon_c = st.session_state.lat, st.session_state.lon
+
     m = folium.Map(
-        location=[st.session_state.lat, st.session_state.lon],
+        location=[lat_c, lon_c],
         zoom_start=st.session_state.zoom,
         tiles=None,
         control_scale=True,
     )
 
-    # 1. Clean Street Map (great for borders & text)
-    folium.TileLayer(
-        tiles="OpenStreetMap",
-        name="Street & Terrain Map",
-        overlay=False,
-        control=True,
-    ).add_to(m)
-
-    # 2. Satellite Imagery View (default for Earth Science look)
+    # Satellite imagery is the default base layer (show=True); street map is selectable
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri, Maxar, Earthstar Geographics",
         name="Satellite Imagery",
         overlay=False,
         control=True,
+        show=True,
     ).add_to(m)
 
-    # Free Esri country borders & place labels overlay (no API key required)
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="Street & Terrain Map",
+        overlay=False,
+        control=True,
+        show=False,
+    ).add_to(m)
+
+    # Borders & place names overlay (switch off when using the street map)
     folium.TileLayer(
         tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
         attr="Esri",
-        name="Place Labels",
+        name="Place Labels (turn off for Street Map)",
         overlay=True,
         control=True,
+        show=True,
     ).add_to(m)
 
-    # Draw approximate MERRA-2 grid cell footprint (0.5° lat x 0.625° lon)
-    lat_c, lon_c = st.session_state.lat, st.session_state.lon
-    grid_bounds = [
-        [lat_c - 0.25, lon_c - 0.3125],
-        [lat_c + 0.25, lon_c + 0.3125],
-    ]
+    # Approximate footprint of the grid cell that the NASA value represents
+    bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
     folium.Rectangle(
-        bounds=grid_bounds,
+        bounds=bounds,
         color="#EF553B",
         weight=2,
         fill=True,
         fill_color="#EF553B",
         fill_opacity=0.15,
-        tooltip="Approximate NASA MERRA-2 Grid Cell (~0.5° × 0.625°)",
+        tooltip=cell_label,
     ).add_to(m)
 
-    # Custom target marker
     folium.Marker(
         [lat_c, lon_c],
         tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
@@ -329,12 +354,13 @@ with col_map:
             st.rerun()
 
 with col_info:
-    v_meta = VARIABLES[var_code]
     st.subheader("Selected Target")
     st.write(f"**Coordinates:** `{fmt_coords(st.session_state.lat, st.session_state.lon)}`")
     st.write(f"**Variable:** {v_meta['name']}")
     st.write(f"**Dataset:** {v_meta['source']}")
     st.info(v_meta["desc"])
+    st.caption("The red box shows the approximate grid cell the NASA value represents. "
+               "Results describe the whole cell, not the exact point.")
 
 # --- Data & analysis -------------------------------------------------------
 st.divider()
@@ -345,8 +371,8 @@ if year_range[1] - year_range[0] < 9:
 
 try:
     with st.spinner("Fetching satellite & model data from NASA POWER API..."):
-        df = fetch_nasa_data(st.session_state.lat, st.session_state.lon, var_code,
-                             year_range[0], year_range[1])
+        df = fetch_nasa_data(round(st.session_state.lat, 2), round(st.session_state.lon, 2),
+                             var_code, year_range[0], year_range[1])
 except (RuntimeError, ValueError) as e:
     st.error(str(e))
     st.stop()
@@ -367,17 +393,17 @@ with st.spinner("Running trend statistics..."):
         st.error(f"The trend test could not be computed for this series ({e}).")
         st.stop()
 
-unit = v_meta["unit"]
 state = verdict(res)
 
 # --- Verdict metrics -------------------------------------------------------
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Rate of Change (Sen's slope)", f"{res['slope_decade']:+.3f} {unit}/decade")
-m2.metric("95% Interval (block bootstrap)", f"{res['ci_low']:+.3f} to {res['ci_high']:+.3f}")
+m2.metric("95% Interval (block bootstrap)",
+          f"{res['ci_low']:+.3f} to {res['ci_high']:+.3f}", help=f"Units: {unit}/decade")
 m3.metric("Total Change over Period", f"{res['total_change']:+.2f} {unit}")
 m4.metric("Mann-Kendall p-value (Hamed-Rao)", f"{res['mk_p']:.4f}")
 
-direction = {"increasing": "an increasing", "decreasing": "a decreasing"}.get(res["mk_trend"], "no clear")
+direction = "an increasing" if res["slope_decade"] > 0 else "a decreasing"
 if state == "significant":
     st.success(
         f"✅ **Statistically significant trend.** The data show {direction} trend of "
@@ -434,30 +460,31 @@ with tab_annual:
     else:
         half = len(ann) // 2
         early, recent = ann.iloc[:half], ann.iloc[half:]
-        diff = recent["Annual Mean"].mean() - early["Annual Mean"].mean()
+        e_mean, r_mean = early["Annual Mean"].mean(), recent["Annual Mean"].mean()
+        diff = r_mean - e_mean
         _, p_welch = stats.ttest_ind(recent["Annual Mean"], early["Annual Mean"], equal_var=False)
 
         c1, c2, c3 = st.columns(3)
         c1.metric(f"Early mean ({int(early['Year'].min())}-{int(early['Year'].max())})",
-                  f"{early['Annual Mean'].mean():.3f} {unit}")
+                  f"{e_mean:.3f} {unit}")
         c2.metric(f"Recent mean ({int(recent['Year'].min())}-{int(recent['Year'].max())})",
-                  f"{recent['Annual Mean'].mean():.3f} {unit}")
+                  f"{r_mean:.3f} {unit}")
         c3.metric("Difference (recent - early)", f"{diff:+.3f} {unit}", help=f"Welch t-test p = {p_welch:.4f}")
 
+        # Markers + period-mean lines (a bar chart with a truncated axis would exaggerate differences)
         fig_a = go.Figure()
-        fig_a.add_trace(go.Bar(x=early["Year"], y=early["Annual Mean"], name="Early period",
-                               marker_color="#636EFA"))
-        fig_a.add_trace(go.Bar(x=recent["Year"], y=recent["Annual Mean"], name="Recent period",
-                               marker_color="#EF553B"))
-        fig_a.update_layout(title="Annual means: early vs. recent half of the record",
-                            yaxis_title=unit, height=400, barmode="group")
-        # Zoom the y-axis so differences between years are visible
-        lo, hi = ann["Annual Mean"].min(), ann["Annual Mean"].max()
-        pad = (hi - lo) * 0.2 or 1
-        fig_a.update_yaxes(range=[lo - pad, hi + pad])
+        for part, color, name, mean_v in ((early, "#636EFA", "Early period", e_mean),
+                                          (recent, "#EF553B", "Recent period", r_mean)):
+            fig_a.add_trace(go.Scatter(x=part["Year"], y=part["Annual Mean"], mode="lines+markers",
+                                       name=name, line=dict(color=color), marker=dict(size=8)))
+            fig_a.add_shape(type="line", x0=part["Year"].min(), x1=part["Year"].max(),
+                            y0=mean_v, y1=mean_v, line=dict(color=color, dash="dash", width=2))
+        fig_a.update_layout(title="Annual means with period averages (dashed)",
+                            yaxis_title=unit, xaxis_title="Year", height=400)
         st.plotly_chart(fig_a, **STRETCH)
-        st.caption(f"Welch t-test on annual means: p = {p_welch:.4f}. "
-                   "A second, independent check on the main trend result.")
+        st.caption(f"Welch t-test on annual means: p = {p_welch:.4f}. This is a simple complementary "
+                   "check on the same data; it does not account for year-to-year correlation, so "
+                   "rely on the main trend test above for the final verdict.")
 
 with tab_table:
     st.dataframe(df.drop(columns=["t"]), **STRETCH)
@@ -468,14 +495,17 @@ with tab_table:
 # --- Limitations -----------------------------------------------------------
 with st.expander("⚠️ How to interpret these results (limitations)"):
     st.markdown(
-        "- **Grid cell, not a point:** NASA POWER draws on MERRA-2 (about 0.5° × 0.625°) and CERES "
-        "satellite products, so each result represents a ~50-60 km area.\n"
+        "- **Grid cell, not a point:** NASA POWER draws on MERRA-2 (about 0.5° × 0.625°, roughly "
+        "55-70 km) and CERES-based satellite products, so each result represents an area, not "
+        "a single spot.\n"
         "- **Model-assimilated data:** reanalysis trends can be affected by changes in the "
         "observations assimilated over time; confirm important findings with independent datasets.\n"
         "- **Short records vs. natural cycles:** 10-25 years can be dominated by El Niño/La Niña and "
         "decadal variability, so a trend is not automatically caused by climate change.\n"
         "- **Statistical significance ≠ importance:** always check the size of the change "
         "(total change and interval), not just the p-value.\n"
-        "- **Cross-validated with NASA Giovanni:** Regional MERRA-2 baseline values in this tool "
-        "were verified against NASA Giovanni's area-averaged time-series portal (`giovanni_svalbard_validation.csv`)."
+        "- **Spot-check against NASA Giovanni:** MERRA-2 values for the Svalbard preset were "
+        "compared with NASA Giovanni's area-averaged time series "
+        "(see `giovanni_svalbard_validation.csv` in the project repository). This is a single-location "
+        "check, not a full validation."
     )
