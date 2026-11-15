@@ -76,6 +76,7 @@ div[data-testid="stMetricValue"] { font-size: 1.48rem; font-weight: 800; color: 
 .target-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 0.15rem; }
 .target-val { font-size: 1.04rem; font-weight: 600; color: #f1f5f9; margin-bottom: 0.75rem; }
 button[data-baseweb="tab"] { font-weight: 600; font-size: 0.92rem; padding-top: 0.6rem; padding-bottom: 0.6rem; }
+iframe[height="0"] { display: none !important; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -162,15 +163,15 @@ def grid_cell(lat, lon, var_code):
 
 
 @st.cache_data(show_spinner=False)
-def globe_click_mesh(step=5):
-    lats = np.arange(-85, 86, step)
+def globe_click_mesh(step=8):
+    lats = np.arange(-84, 85, step)
     lons = np.arange(-180, 180, step)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
     return lat_grid.ravel().astype(float), lon_grid.ravel().astype(float)
 
 
 @st.cache_data(show_spinner=False)
-def build_globe(lat_c, lon_c, var_code, has_selected):
+def build_globe(lat_c, lon_c, var_code, has_selected, nonce):
     g_lats, g_lons = globe_click_mesh()
     fig = go.Figure()
 
@@ -178,7 +179,7 @@ def build_globe(lat_c, lon_c, var_code, has_selected):
         lat=g_lats,
         lon=g_lons,
         mode="markers",
-        marker=dict(size=18, opacity=0.001, color="#ffffff"),
+        marker=dict(size=24, opacity=0.001, color="#ffffff"),
         selected=dict(marker=dict(opacity=0.001)),
         unselected=dict(marker=dict(opacity=0.001)),
         hovertemplate="Click to select: %{lat:.0f}°, %{lon:.0f}°<extra></extra>",
@@ -228,13 +229,13 @@ def build_globe(lat_c, lon_c, var_code, has_selected):
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="#050914",
         clickmode="event+select",
-        dragmode="pan",
-        uirevision="globe_camera",
+        dragmode=False,
+        uirevision=f"globe_{nonce}",
     )
     return fig, g_lats, g_lons
 
 
-def inject_smooth_globe_spin(active):
+def inject_globle_spin(active):
     if not active:
         return
     components.html(
@@ -250,7 +251,7 @@ def inject_smooth_globe_spin(active):
                 const topPlots = doc.querySelectorAll('.js-plotly-plot');
                 for (const p of topPlots) {
                     if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {
-                        return { plot: p, plotly: window.parent.Plotly };
+                        return { plot: p, plotly: window.parent.Plotly, targetDoc: doc };
                     }
                 }
                 const iframes = doc.querySelectorAll('iframe');
@@ -262,7 +263,7 @@ def inject_smooth_globe_spin(active):
                         const fPlots = fDoc.querySelectorAll('.js-plotly-plot');
                         for (const p of fPlots) {
                             if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {
-                                return { plot: p, plotly: win.Plotly };
+                                return { plot: p, plotly: win.Plotly, targetDoc: fDoc };
                             }
                         }
                     } catch (e) {}
@@ -271,6 +272,7 @@ def inject_smooth_globe_spin(active):
             }
 
             function stop() {
+                if (!running) return;
                 running = false;
                 if (rafId) cancelAnimationFrame(rafId);
             }
@@ -278,13 +280,14 @@ def inject_smooth_globe_spin(active):
             function attachAndSpin() {
                 const ctx = findGlobeContext();
                 if (!ctx) {
-                    if (running) setTimeout(attachAndSpin, 100);
+                    if (running) setTimeout(attachAndSpin, 80);
                     return;
                 }
 
                 const { plot, plotly } = ctx;
-                plot.addEventListener('pointerdown', stop, { passive: true });
-                plot.addEventListener('wheel', stop, { passive: true });
+                ['mousedown', 'pointerdown', 'touchstart', 'wheel'].forEach(evt => {
+                    plot.addEventListener(evt, stop, { passive: true, capture: true });
+                });
 
                 let lon = (plot._fullLayout.geo.projection.rotation && plot._fullLayout.geo.projection.rotation.lon) || 72.87;
                 const lat = (plot._fullLayout.geo.projection.rotation && plot._fullLayout.geo.projection.rotation.lat) || 18;
@@ -294,7 +297,7 @@ def inject_smooth_globe_spin(active):
                     if (!running) return;
                     const dt = Math.min((now - lastTime) / 1000, 0.05);
                     lastTime = now;
-                    lon = ((lon + 11.0 * dt + 180) % 360) - 180;
+                    lon = ((lon + 18.0 * dt + 180) % 360) - 180;
                     try {
                         plotly.relayout(plot, {
                             'geo.projection.rotation.lon': lon,
@@ -534,18 +537,19 @@ def on_manual_coords():
 def render_globe(var_code):
     lat_c, lon_c = st.session_state.lat, st.session_state.lon
     has_sel = st.session_state.has_selected
+    nonce = st.session_state.globe_nonce
 
-    globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, var_code, has_sel)
+    globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, var_code, has_sel, nonce)
     event = st.plotly_chart(
         globe_fig,
-        key=f"globe_{st.session_state.globe_nonce}",
+        key=f"globe_{nonce}",
         on_select="rerun",
         selection_mode="points",
-        config={"displayModeBar": False},
+        config={"displayModeBar": False, "scrollZoom": True},
         **STRETCH,
     )
-    inject_smooth_globe_spin(active=not has_sel)
-    st.caption("💡 Click anywhere on the globe to select a location, or drag to rotate manually.")
+    inject_globle_spin(active=not has_sel)
+    st.caption("💡 Click anywhere on the globe to select a location, or drag to rotate freely.")
 
     try:
         points = event["selection"]["points"]
