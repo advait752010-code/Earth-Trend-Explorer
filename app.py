@@ -1,5 +1,6 @@
-import os
 import time
+from pathlib import Path
+
 import folium
 import numpy as np
 import pandas as pd
@@ -14,15 +15,18 @@ from streamlit_folium import st_folium
 st.set_page_config(
     page_title="NASA Earth Trend Explorer",
     page_icon="🌍",
-    layout="wide"
+    layout="wide",
 )
 
 # Newer Streamlit versions replace use_container_width with width="stretch"
 NEW_WIDTH_API = Version(st.__version__) >= Version("1.50.0")
 STRETCH = {"width": "stretch"} if NEW_WIDTH_API else {"use_container_width": True}
 
+APP_DIR = Path(__file__).resolve().parent
+GIOVANNI_CSV = APP_DIR / "giovanni_svalbard_validation.csv"
+
 # ----------------------------------------------------------------------------
-# 1. NASA POWER variable catalog & Presets
+# 1. NASA POWER variable catalog & presets
 # ----------------------------------------------------------------------------
 VARIABLES = {
     "T2M": {
@@ -63,12 +67,13 @@ VARIABLES = {
     },
 }
 
+SVALBARD_NAME = "Arctic (Svalbard, Norway)"
 PRESETS = {
     "Custom (Click Map)": None,
     "Amazon Rainforest (Manaus)": (-3.12, -60.02),
     "Sahara Desert (Tamanrasset)": (22.79, 5.52),
     "Mumbai Coast, India": (19.07, 72.87),
-    "Arctic (Svalbard, Norway)": (78.22, 15.65),
+    SVALBARD_NAME: (78.22, 15.65),
     "Coastal Peru (El Niño Zone)": (-5.19, -80.63),
     "Borneo Rainforest (Indonesia)": (-1.25, 116.83),
 }
@@ -78,7 +83,7 @@ ALPHA = 0.05
 
 
 # ----------------------------------------------------------------------------
-# 2. Helpers & Data Access
+# 2. Helpers & data access
 # ----------------------------------------------------------------------------
 def wrap_lon(lon):
     """Map any longitude into [-180, 180)."""
@@ -124,6 +129,7 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
         try:
             r = requests.get(url, params=params, timeout=30)
             if 400 <= r.status_code < 500:
+                # Client error: retrying will not help
                 raise RuntimeError(f"NASA POWER rejected the request (HTTP {r.status_code}). "
                                    "Try a different location, variable or period.")
             r.raise_for_status()
@@ -137,11 +143,10 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
         raise RuntimeError(f"The NASA POWER service could not be reached ({last_err}). "
                            "Please try again in a moment.")
 
-    # Check if NASA POWER returned structural error messages in JSON
-    if "messages" in payload and payload["messages"]:
-        msgs = [str(m) for m in payload["messages"]]
-        if any("error" in m.lower() or "invalid" in m.lower() for m in msgs):
-            raise RuntimeError(f"NASA POWER API message: {' '.join(msgs)}")
+    # NASA POWER can report problems in a "messages" list
+    msgs = [str(m) for m in (payload.get("messages") or [])]
+    if any("error" in m.lower() or "invalid" in m.lower() for m in msgs):
+        raise RuntimeError(f"NASA POWER API message: {' '.join(msgs)}")
 
     try:
         raw = payload["properties"]["parameter"][param]
@@ -150,6 +155,7 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
 
     records = []
     for ym, val in raw.items():
+        # '13' = annual summary; values <= -990 are NASA's missing-data fill (-999)
         if ym.endswith("13") or val is None or float(val) <= -990:
             continue
         date = pd.to_datetime(ym, format="%Y%m")
@@ -160,36 +166,85 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
                          "(for example, soil wetness over open ocean). Try a land point.")
 
     df = pd.DataFrame(records).sort_values("Date").reset_index(drop=True)
-    df["t"] = (df["Year"] - df["Year"].min()) * 12 + (df["Month"] - 1)
+    df["t"] = (df["Year"] - df["Year"].min()) * 12 + (df["Month"] - 1)  # months since first record
     df["Anomaly"] = df["Value"] - df.groupby("Month")["Value"].transform("mean")
     return df
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_giovanni_validation():
-    """Load pre-downloaded validation CSV from repository, skipping Giovanni metadata rows."""
-    path = "giovanni_svalbard_validation.csv"
-    if not os.path.exists(path):
+    """Load the Giovanni export from the repository, skipping its metadata header lines."""
+    if not GIOVANNI_CSV.exists():
         return None
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
+        lines = GIOVANNI_CSV.read_text(encoding="utf-8", errors="ignore").splitlines()
         header_idx = 0
         for i, line in enumerate(lines):
-            if line.lower().startswith("time,") or line.lower().startswith("date,"):
+            low = line.strip().lower()
+            if low.startswith("time,") or low.startswith("date,"):
                 header_idx = i
                 break
-        return pd.read_csv(path, skiprows=header_idx)
+        return pd.read_csv(GIOVANNI_CSV, skiprows=header_idx)
     except Exception:
         return None
 
 
+def compare_with_giovanni(val_df, power_df):
+    """Compare NASA POWER monthly air temperature with a Giovanni T2M export.
+
+    Returns (merged_dataframe, metrics) on success or (None, message) otherwise.
+    Only temperature (T2M) is compared quantitatively, because Giovanni and POWER
+    can use different units for other variables.
+    """
+    tcol = val_df.columns[0]
+    num_cols = [c for c in val_df.columns[1:] if pd.api.types.is_numeric_dtype(val_df[c])]
+    if not num_cols:
+        return None, "No numeric data column was found in the Giovanni file."
+    vcol = num_cols[0]
+    if "t2m" not in str(vcol).lower():
+        return None, (f"The Giovanni file's data column (`{vcol}`) does not look like air temperature "
+                      "(T2M), so no automatic comparison was run.")
+
+    g = pd.DataFrame({
+        "Date": (pd.to_datetime(val_df[tcol], errors="coerce", utc=True)
+                 .dt.tz_localize(None).dt.to_period("M").dt.to_timestamp()),
+        "Giovanni": pd.to_numeric(val_df[vcol], errors="coerce"),
+    }).dropna()
+    if g.empty:
+        return None, "The Giovanni file's time column could not be read."
+    if g["Giovanni"].mean() > 150:      # Giovanni reports MERRA-2 temperature in kelvin
+        g["Giovanni"] = g["Giovanni"] - 273.15
+
+    merged = (power_df[["Date", "Value"]].rename(columns={"Value": "POWER"})
+              .merge(g, on="Date", how="inner"))
+    if len(merged) < 24:
+        return None, (f"Only {len(merged)} overlapping months between the two sources for the selected "
+                      "period; at least 24 are needed. Widen the analysis period.")
+
+    months = merged["Date"].dt.month
+    anom_p = merged["POWER"] - merged.groupby(months)["POWER"].transform("mean")
+    anom_g = merged["Giovanni"] - merged.groupby(months)["Giovanni"].transform("mean")
+    diff = merged["POWER"] - merged["Giovanni"]
+    metrics = {
+        "n": len(merged),
+        "bias": float(diff.mean()),
+        "rmse": float(np.sqrt((diff ** 2).mean())),
+        "r_anom": float(np.corrcoef(anom_p, anom_g)[0, 1]),
+    }
+    return merged, metrics
+
+
 # ----------------------------------------------------------------------------
-# 3. Statistics & Analysis
+# 3. Statistics & analysis
 # ----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def analyze_trend(df, n_boot=300, block=12, seed=42):
-    """Robust trend analysis for autocorrelated monthly anomalies."""
+    """Robust trend analysis for autocorrelated monthly anomalies.
+
+    - Trend size: Theil-Sen slope (robust to outliers).
+    - Significance: Hamed-Rao modified Mann-Kendall test (corrects for serial correlation).
+    - Uncertainty: moving-block bootstrap of the Theil-Sen slope (95% interval).
+    """
     y = df["Anomaly"].to_numpy(dtype=float)
     t = df["t"].to_numpy(dtype=float)
     n = len(y)
@@ -199,7 +254,6 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
     resid = y - fitted
 
     mk_res = mk.hamed_rao_modification_test(y)
-    p_val = getattr(mk_res, "p", getattr(mk_res, "p_value", 0.05))
 
     rng = np.random.default_rng(seed)
     n_blocks = int(np.ceil(n / block))
@@ -211,18 +265,18 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
     ci_low, ci_high = np.percentile(boots, [2.5, 97.5])
 
     return {
-        "slope_decade": slope * 120,
+        "slope_decade": slope * 120,                 # per month -> per decade
         "ci_low": ci_low * 120,
         "ci_high": ci_high * 120,
         "total_change": slope * (t.max() - t.min()),
-        "mk_p": float(p_val),
+        "mk_p": float(mk_res.p),
         "trend_line": fitted,
     }
 
 
 def annual_means(df):
     g = df.groupby("Year")["Value"].agg(["mean", "count"]).reset_index()
-    g = g[g["count"] == 12]
+    g = g[g["count"] == 12]  # complete years only so the seasonal cycle cancels out
     return g[["Year", "mean"]].rename(columns={"mean": "Annual Mean"})
 
 
@@ -237,7 +291,7 @@ def verdict(res):
 
 
 # ----------------------------------------------------------------------------
-# 4. Session State & Callbacks
+# 4. Session state & callbacks
 # ----------------------------------------------------------------------------
 st.session_state.setdefault("lat", 19.07)
 st.session_state.setdefault("lon", 72.87)
@@ -245,21 +299,20 @@ st.session_state.setdefault("zoom", 3)
 st.session_state.setdefault("last_click", None)
 st.session_state.setdefault("preset", "Mumbai Coast, India")
 
-# Apply pending preset update BEFORE the sidebar widget is instantiated
+# Apply a pending preset label BEFORE the sidebar widget is instantiated
 if "pending_preset" in st.session_state:
     st.session_state["preset"] = st.session_state.pop("pending_preset")
 
 
 def on_preset_change():
-    selected_preset = st.session_state["preset"]
-    coords = PRESETS[selected_preset]
+    coords = PRESETS[st.session_state["preset"]]
     if coords is not None:
         st.session_state["lat"], st.session_state["lon"] = coords
         st.session_state["zoom"] = 5
 
 
 # ----------------------------------------------------------------------------
-# 5. UI Layout
+# 5. UI layout
 # ----------------------------------------------------------------------------
 st.title("🌍 NASA Earth Science Trend Explorer")
 st.markdown(
@@ -280,10 +333,9 @@ with st.sidebar:
     st.selectbox("Jump to a Region", list(PRESETS.keys()), key="preset", on_change=on_preset_change)
 
     st.divider()
-    if st.button("🔄 Clear App Cache"):
-        st.cache_data.clear()
-        st.success("Cache cleared successfully!")
-        st.rerun()
+    if st.button("🔄 Clear cached data"):
+        st.cache_data.clear()  # this run continues and re-fetches fresh data below
+        st.toast("Cache cleared. Fetching fresh data.")
 
     with st.expander("ℹ️ How the analysis works"):
         st.markdown(
@@ -299,7 +351,7 @@ with st.sidebar:
 v_meta = VARIABLES[var_code]
 unit = v_meta["unit"]
 
-# --- Map & Info Columns ----------------------------------------------------
+# --- Map & info columns ----------------------------------------------------
 col_map, col_info = st.columns([2, 1])
 with col_map:
     lat_c, lon_c = st.session_state.lat, st.session_state.lon
@@ -331,7 +383,7 @@ with col_map:
     folium.TileLayer(
         tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
         attr="Esri",
-        name="Place Labels",
+        name="Place Labels (turn off for Street Map)",
         overlay=True,
         control=True,
         show=True,
@@ -356,25 +408,24 @@ with col_map:
 
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
 
+    # Only return clicks, so panning/zooming doesn't trigger reruns or recentre the map
     try:
-        map_data = st_folium(m, height=380, use_container_width=True, returned_objects=["last_clicked"], key="interactive_map")
+        map_data = st_folium(m, height=380, use_container_width=True,
+                             returned_objects=["last_clicked"], key="interactive_map")
     except TypeError:
-        map_data = st_folium(m, height=380, width=700, returned_objects=["last_clicked"], key="interactive_map")
+        map_data = st_folium(m, height=380, width=700,
+                             returned_objects=["last_clicked"], key="interactive_map")
 
     if map_data and map_data.get("last_clicked"):
         click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
+        # Act only on NEW clicks: a stale click must never override a preset choice
         if click != st.session_state.last_click:
             st.session_state.last_click = click
             st.session_state.lat = click[0]
             st.session_state.lon = round(wrap_lon(click[1]), 4)
             st.session_state.zoom = max(st.session_state.zoom, 5)
-
-            matched_preset = "Custom (Click Map)"
-            for p_name, p_coords in PRESETS.items():
-                if p_coords and abs(p_coords[0] - click[0]) < 0.5 and abs(p_coords[1] - wrap_lon(click[1])) < 0.5:
-                    matched_preset = p_name
-                    break
-            st.session_state["pending_preset"] = matched_preset
+            # A clicked point is a custom location, never a preset
+            st.session_state["pending_preset"] = "Custom (Click Map)"
             st.rerun()
 
 with col_info:
@@ -383,9 +434,10 @@ with col_info:
     st.write(f"**Variable:** {v_meta['name']}")
     st.write(f"**Dataset:** {v_meta['source']}")
     st.info(v_meta["desc"])
-    st.caption("The red box shows the approximate grid cell the NASA value represents.")
+    st.caption("The red box shows the approximate grid cell the NASA value represents. "
+               "Results describe the whole cell, not the exact point.")
 
-# --- Data & Analysis Execution ---------------------------------------------
+# --- Data & analysis -------------------------------------------------------
 st.divider()
 
 if year_range[1] - year_range[0] < 9:
@@ -400,7 +452,8 @@ except (RuntimeError, ValueError) as e:
     st.stop()
 
 if len(df) < MIN_MONTHS:
-    st.error(f"Only {len(df)} valid months were returned; at least {MIN_MONTHS} are needed for a reliable trend test.")
+    st.error(f"Only {len(df)} valid months were returned; at least {MIN_MONTHS} are needed for a "
+             "reliable trend test. Choose a longer period or a different location.")
     st.stop()
 
 n_expected = (year_range[1] - year_range[0] + 1) * 12
@@ -410,16 +463,17 @@ if len(df) < n_expected:
 with st.spinner("Running trend statistics..."):
     try:
         res = analyze_trend(df)
-    except Exception as e:
+    except Exception as e:  # e.g. constant series
         st.error(f"The trend test could not be computed for this series ({e}).")
         st.stop()
 
 state = verdict(res)
 
-# --- Verdict Metrics -------------------------------------------------------
+# --- Verdict metrics -------------------------------------------------------
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Rate of Change (Sen's slope)", f"{res['slope_decade']:+.3f} {unit}/decade")
-m2.metric("95% Interval (block bootstrap)", f"{res['ci_low']:+.3f} to {res['ci_high']:+.3f}", help=f"Units: {unit}/decade")
+m2.metric("95% Interval (block bootstrap)", f"{res['ci_low']:+.3f} to {res['ci_high']:+.3f}",
+          help=f"Units: {unit}/decade")
 m3.metric("Total Change over Period", f"{res['total_change']:+.2f} {unit}")
 m4.metric("Mann-Kendall p-value (Hamed-Rao)", f"{res['mk_p']:.4f}")
 
@@ -432,22 +486,25 @@ if state == "significant":
     )
 elif state == "borderline":
     st.warning(
-        "⚠️ **Mixed evidence.** The significance test and uncertainty interval disagree "
-        f"(p = {res['mk_p']:.4f}; interval {res['ci_low']:+.3f} to {res['ci_high']:+.3f} {unit}/decade)."
+        "⚠️ **Mixed evidence.** The significance test and the uncertainty interval disagree "
+        f"(p = {res['mk_p']:.4f}; interval {res['ci_low']:+.3f} to {res['ci_high']:+.3f} {unit}/decade). "
+        "Treat this trend as possible but not confirmed."
     )
 else:
     st.info(
-        f"**No statistically significant trend** (p = {res['mk_p']:.4f}). Changes at this location "
+        f"➖ **No statistically significant trend** (p = {res['mk_p']:.4f}). Changes at this location "
         "are within natural variability for the selected period."
     )
 
-# --- Charts & Validation Tabs ----------------------------------------------
-is_svalbard = abs(st.session_state.lat - 78.22) < 0.5 and abs(st.session_state.lon - 15.65) < 0.5
+# --- Charts & validation tabs ----------------------------------------------
+# The Giovanni check was prepared for the Svalbard preset location only
+is_svalbard = (abs(st.session_state.lat - PRESETS[SVALBARD_NAME][0]) < 0.01
+               and abs(st.session_state.lon - PRESETS[SVALBARD_NAME][1]) < 0.01)
 
-tab_names = ["📈 Deseasonalized Trend", "🌊 Raw Monthly Observations", "🕵️ Detective: Early vs. Recent", "📋 Data Table"]
+tab_names = ["📈 Deseasonalized Trend", "🌊 Raw Monthly Observations",
+             "🕵️ Detective: Early vs. Recent", "📋 Data Table"]
 if is_svalbard:
-    tab_names.append("🛰️ NASA Giovanni Cross-Validation")
-
+    tab_names.append("🛰️ Giovanni Spot-Check")
 tabs = st.tabs(tab_names)
 
 with tabs[0]:
@@ -492,8 +549,12 @@ with tabs[2]:
                                        name=name, line=dict(color=color), marker=dict(size=8)))
             fig_a.add_shape(type="line", x0=part["Year"].min(), x1=part["Year"].max(),
                             y0=mean_v, y1=mean_v, line=dict(color=color, dash="dash", width=2))
-        fig_a.update_layout(title="Annual means with period averages (dashed)", yaxis_title=unit, xaxis_title="Year", height=400)
+        fig_a.update_layout(title="Annual means with period averages (dashed)",
+                            yaxis_title=unit, xaxis_title="Year", height=400)
         st.plotly_chart(fig_a, **STRETCH)
+        st.caption(f"Welch t-test on annual means: p = {p_welch:.4f}. A simple complementary check on the "
+                   "same data; it ignores year-to-year correlation, so rely on the main trend test for "
+                   "the final verdict.")
 
 with tabs[3]:
     st.dataframe(df.drop(columns=["t"]), **STRETCH)
@@ -503,26 +564,51 @@ with tabs[3]:
 
 if is_svalbard:
     with tabs[4]:
-        st.subheader("🛰️ NASA Giovanni Independent Tool Cross-Validation")
+        st.subheader("🛰️ NASA Giovanni spot-check (Svalbard preset)")
         st.markdown(
-            "To prove scientific rigor for the Space Apps Challenge, MERRA-2 values for this Svalbard preset "
-            "were cross-validated against official NASA Giovanni time-series exports."
+            "A single-location check of the monthly values used in this app against an export from "
+            "**NASA Giovanni**, an independent NASA data-access tool. It is a sanity check, not a full "
+            "validation. Giovanni exports are typically area-averaged, so small differences are expected."
         )
         val_df = load_giovanni_validation()
-        if val_df is not None:
-            st.success("✅ `giovanni_svalbard_validation.csv` loaded successfully from repository.")
-            st.dataframe(val_df, **STRETCH)
+        if val_df is None:
+            st.info("`giovanni_svalbard_validation.csv` was not found in the project repository.")
         else:
-            st.info("Validation file `giovanni_svalbard_validation.csv` not found in root directory.")
+            if var_code != "T2M":
+                st.info("Select **Air Temperature (T2M)** in the sidebar to run the automatic comparison.")
+            else:
+                merged, out = compare_with_giovanni(val_df, df)
+                if merged is None:
+                    st.info(out)
+                else:
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("Overlapping months", f"{out['n']}")
+                    k2.metric("Mean difference (POWER - Giovanni)", f"{out['bias']:+.2f} °C")
+                    k3.metric("RMSE", f"{out['rmse']:.2f} °C")
+                    k4.metric("Correlation (seasonal cycle removed)", f"{out['r_anom']:.3f}")
+                    fig_g = go.Figure()
+                    fig_g.add_trace(go.Scatter(x=merged["Date"], y=merged["POWER"], mode="lines",
+                                               name="NASA POWER (this app)", line=dict(color="#636EFA")))
+                    fig_g.add_trace(go.Scatter(x=merged["Date"], y=merged["Giovanni"], mode="lines",
+                                               name="NASA Giovanni export", line=dict(color="#EF553B", dash="dot")))
+                    fig_g.update_layout(title="Monthly air temperature: POWER vs. Giovanni",
+                                        yaxis_title="°C", height=380, legend=dict(orientation="h", y=-0.2))
+                    st.plotly_chart(fig_g, **STRETCH)
+            with st.expander("Show raw Giovanni file"):
+                st.dataframe(val_df, **STRETCH)
 
-# --- Limitations & Documentation -------------------------------------------
+# --- Limitations -----------------------------------------------------------
 with st.expander("⚠️ How to interpret these results (limitations)"):
     st.markdown(
-        "- **Grid cell, not a point:** NASA POWER draws on MERRA-2 (~0.5° × 0.625°) and CERES, "
-        "representing a regional footprint.\n"
-        "- **Model-assimilated data:** Reanalysis trends can be affected by changes in assimilated observations over time.\n"
-        "- **Short records vs. natural cycles:** Decadal variability can overshadow long-term climate signals.\n"
-        "- **Statistical significance ≠ importance:** Always review magnitude and uncertainty bounds.\n"
-        "- **Spot-check against NASA Giovanni:** MERRA-2 values for the Svalbard preset were compared with "
-        "NASA Giovanni's area-averaged time series (`giovanni_svalbard_validation.csv`)."
+        "- **Grid cell, not a point:** NASA POWER draws on MERRA-2 (~0.5° × 0.625°, roughly 55-70 km) "
+        "and CERES-based products, so each result represents an area, not a single spot.\n"
+        "- **Model-assimilated data:** reanalysis trends can be affected by changes in the "
+        "observations assimilated over time.\n"
+        "- **Short records vs. natural cycles:** 10-25 years can be dominated by El Niño/La Niña and "
+        "decadal variability, so a trend is not automatically caused by climate change.\n"
+        "- **Statistical significance ≠ importance:** always check the size of the change "
+        "(total change and interval), not just the p-value.\n"
+        "- **Limited external check:** the Svalbard preset was spot-checked against NASA Giovanni "
+        "(`giovanni_svalbard_validation.csv`); other locations and variables were not independently "
+        "validated."
     )
