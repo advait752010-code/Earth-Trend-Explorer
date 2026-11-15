@@ -228,7 +228,8 @@ def build_globe(lat_c, lon_c, var_code, has_selected):
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="#050914",
         clickmode="event+select",
-        uirevision=f"globe_{has_selected}_{lat_c}_{lon_c}",
+        dragmode="pan",
+        uirevision="globe_camera",
     )
     return fig, g_lats, g_lons
 
@@ -245,12 +246,26 @@ def inject_smooth_globe_spin(active):
             let running = true;
             let lastTime = performance.now();
 
-            function findPlot() {
-                const plots = doc.querySelectorAll('.js-plotly-plot');
-                for (const p of plots) {
+            function findGlobeContext() {
+                const topPlots = doc.querySelectorAll('.js-plotly-plot');
+                for (const p of topPlots) {
                     if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {
-                        return p;
+                        return { plot: p, plotly: window.parent.Plotly };
                     }
+                }
+                const iframes = doc.querySelectorAll('iframe');
+                for (const frame of iframes) {
+                    try {
+                        const win = frame.contentWindow;
+                        const fDoc = frame.contentDocument || (win && win.document);
+                        if (!fDoc || !win || !win.Plotly) continue;
+                        const fPlots = fDoc.querySelectorAll('.js-plotly-plot');
+                        for (const p of fPlots) {
+                            if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {
+                                return { plot: p, plotly: win.Plotly };
+                            }
+                        }
+                    } catch (e) {}
                 }
                 return null;
             }
@@ -261,12 +276,13 @@ def inject_smooth_globe_spin(active):
             }
 
             function attachAndSpin() {
-                const plot = findPlot();
-                if (!plot || !window.parent.Plotly) {
-                    if (running) setTimeout(attachAndSpin, 120);
+                const ctx = findGlobeContext();
+                if (!ctx) {
+                    if (running) setTimeout(attachAndSpin, 100);
                     return;
                 }
 
+                const { plot, plotly } = ctx;
                 plot.addEventListener('pointerdown', stop, { passive: true });
                 plot.addEventListener('wheel', stop, { passive: true });
 
@@ -275,14 +291,19 @@ def inject_smooth_globe_spin(active):
                 lastTime = performance.now();
 
                 function step(now) {
-                    if (!running || !doc.body.contains(plot)) return;
+                    if (!running) return;
                     const dt = Math.min((now - lastTime) / 1000, 0.05);
                     lastTime = now;
-                    lon = ((lon + 10.0 * dt + 180) % 360) - 180;
-                    window.parent.Plotly.relayout(plot, {
-                        'geo.projection.rotation.lon': lon,
-                        'geo.projection.rotation.lat': lat
-                    });
+                    lon = ((lon + 11.0 * dt + 180) % 360) - 180;
+                    try {
+                        plotly.relayout(plot, {
+                            'geo.projection.rotation.lon': lon,
+                            'geo.projection.rotation.lat': lat
+                        });
+                    } catch (e) {
+                        stop();
+                        return;
+                    }
                     rafId = requestAnimationFrame(step);
                 }
                 rafId = requestAnimationFrame(step);
@@ -541,6 +562,7 @@ def render_globe(var_code):
             st.session_state.last_globe_sel = sel
             set_location(*sel)
             st.session_state["pending_preset"] = NO_PRESET
+            st.session_state["globe_nonce"] += 1
             st.rerun()
         break
 
