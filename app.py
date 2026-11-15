@@ -214,7 +214,7 @@ html, body { margin: 0; padding: 0; background: #050914; overflow: hidden; }
       rot.lon = a.focus_lon;
       rot.lat = sel ? a.focus_lat * 0.65 : 20;
     }
-    spinning = !sel;
+    spinning = true;
     if (!created) {
       created = true;
       window.Plotly.newPlot(el, buildData(a), buildLayout(), CONFIG).then(function () {
