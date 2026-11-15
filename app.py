@@ -1,6 +1,5 @@
 import time
 from pathlib import Path
-
 import folium
 import numpy as np
 import pandas as pd
@@ -19,12 +18,14 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Newer Streamlit versions replace use_container_width with width="stretch"
 NEW_WIDTH_API = Version(st.__version__) >= Version("1.50.0")
 STRETCH = {"width": "stretch"} if NEW_WIDTH_API else {"use_container_width": True}
 
 APP_DIR = Path(__file__).resolve().parent
 GIOVANNI_CSV = APP_DIR / "giovanni_svalbard_validation.csv"
+
+SPIN_DEG_PER_SEC = 18.0
+SPIN_INTERVAL = 0.35
 
 st.markdown(
     """
@@ -82,9 +83,6 @@ button[data-baseweb="tab"] { font-weight: 600; font-size: 0.92rem; padding-top: 
     unsafe_allow_html=True,
 )
 
-# ----------------------------------------------------------------------------
-# 1. Variables & presets
-# ----------------------------------------------------------------------------
 VARIABLES = {
     "T2M": {
         "name": "Air Temperature (2m above surface)",
@@ -140,9 +138,6 @@ MIN_MONTHS = 36
 ALPHA = 0.05
 
 
-# ----------------------------------------------------------------------------
-# 2. Helpers & data access
-# ----------------------------------------------------------------------------
 def wrap_lon(lon):
     return ((lon + 180) % 360) - 180
 
@@ -153,15 +148,16 @@ def fmt_coords(lat, lon):
 
 
 def grid_cell(lat, lon, var_code):
-    """Approximate footprint of the source grid cell containing the selected point."""
     if var_code == "ALLSKY_SFC_SW_DWN":
         dlat, dlon = 1.0, 1.0
         label = "Approximate CERES-based solar grid cell (~1° × 1°)"
+        c_lat = min(float(np.floor(lat)) + 0.5, 89.5)
+        c_lon = min(float(np.floor(lon)) + 0.5, 179.5)
     else:
         dlat, dlon = 0.5, 0.625
         label = "Approximate NASA MERRA-2 grid cell (~0.5° × 0.625°)"
-    c_lat = round(lat / dlat) * dlat
-    c_lon = round((lon + 180) / dlon) * dlon - 180
+        c_lat = round(lat / dlat) * dlat
+        c_lon = round((lon + 180) / dlon) * dlon - 180
     south = max(c_lat - dlat / 2, -90)
     north = min(c_lat + dlat / 2, 90)
     return [[south, c_lon - dlon / 2], [north, c_lon + dlon / 2]], label
@@ -169,15 +165,13 @@ def grid_cell(lat, lon, var_code):
 
 @st.cache_data(show_spinner=False)
 def globe_click_mesh(step=5):
-    """Invisible grid of clickable points covering the globe."""
     lats = np.arange(-85, 86, step)
     lons = np.arange(-180, 180, step)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
     return lat_grid.ravel().astype(float), lon_grid.ravel().astype(float)
 
 
-def build_globe(lat_c, lon_c, var_code, has_selected):
-    """3D orthographic globe. Trace 0 is the invisible click-target mesh."""
+def build_globe(lat_c, lon_c, var_code, has_selected, spin_lon=None):
     g_lats, g_lons = globe_click_mesh()
     fig = go.Figure()
 
@@ -216,9 +210,14 @@ def build_globe(lat_c, lon_c, var_code, has_selected):
             showlegend=False,
         ))
 
+    if spin_lon is None:
+        rotation = dict(lat=lat_c * 0.65, lon=lon_c, roll=0)
+    else:
+        rotation = dict(lat=20, lon=spin_lon, roll=0)
+
     fig.update_geos(
         projection_type="orthographic",
-        projection_rotation=dict(lat=lat_c * 0.65, lon=lon_c, roll=0),
+        projection_rotation=rotation,
         showland=True, landcolor="rgb(40, 74, 54)",
         showocean=True, oceancolor="rgb(10, 30, 58)",
         showlakes=True, lakecolor="rgb(16, 46, 86)",
@@ -237,7 +236,6 @@ def build_globe(lat_c, lon_c, var_code, has_selected):
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def fetch_nasa_data(lat, lon, param, start_year, end_year):
-    """Download monthly NASA POWER data and compute deseasonalized anomalies."""
     url = "https://power.larc.nasa.gov/api/temporal/monthly/point"
     params = {
         "parameters": param,
@@ -253,6 +251,10 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
     for attempt in range(3):
         try:
             r = requests.get(url, params=params, timeout=30)
+            if r.status_code == 429:
+                last_err = "rate limit reached"
+                time.sleep(2.0 * (attempt + 1))
+                continue
             if 400 <= r.status_code < 500:
                 raise RuntimeError(f"NASA POWER rejected the request (HTTP {r.status_code}). "
                                    "Try a different location, variable or period.")
@@ -311,7 +313,6 @@ def load_giovanni_validation():
 
 
 def compare_with_giovanni(val_df, power_df):
-    """Compare NASA POWER monthly air temperature with a Giovanni T2M export."""
     tcol = val_df.columns[0]
     num_cols = [c for c in val_df.columns[1:] if pd.api.types.is_numeric_dtype(val_df[c])]
     if not num_cols:
@@ -328,7 +329,7 @@ def compare_with_giovanni(val_df, power_df):
     }).dropna()
     if g.empty:
         return None, "The Giovanni file's time column could not be read."
-    if g["Giovanni"].mean() > 150:      # Giovanni reports MERRA-2 temperature in kelvin
+    if g["Giovanni"].mean() > 150:
         g["Giovanni"] = g["Giovanni"] - 273.15
 
     merged = (power_df[["Date", "Value"]].rename(columns={"Value": "POWER"})
@@ -350,12 +351,8 @@ def compare_with_giovanni(val_df, power_df):
     return merged, metrics
 
 
-# ----------------------------------------------------------------------------
-# 3. Statistics
-# ----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def analyze_trend(df, n_boot=300, block=12, seed=42):
-    """Theil-Sen slope, Hamed-Rao modified Mann-Kendall p-value, block-bootstrap interval."""
     y = df["Anomaly"].to_numpy(dtype=float)
     t = df["t"].to_numpy(dtype=float)
     n = len(y)
@@ -380,7 +377,7 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
         "ci_low": ci_low * 120,
         "ci_high": ci_high * 120,
         "total_change": slope * (t.max() - t.min()),
-        "mk_p": float(mk_res.p),       # no silent fallback: a failure should surface as an error
+        "mk_p": float(mk_res.p),
         "trend_line": fitted,
     }
 
@@ -402,7 +399,6 @@ def verdict(res):
 
 
 def style_plotly_chart(fig, height=410):
-    """Dark chart cards that stay readable in both light and dark Streamlit themes."""
     fig.update_layout(
         height=height,
         paper_bgcolor="#0b1220",
@@ -416,19 +412,15 @@ def style_plotly_chart(fig, height=410):
     return fig
 
 
-# ----------------------------------------------------------------------------
-# 4. Session state & callbacks
-# ----------------------------------------------------------------------------
 st.session_state.setdefault("lat", 19.07)
 st.session_state.setdefault("lon", 72.87)
 st.session_state.setdefault("zoom", 3)
 st.session_state.setdefault("has_selected", False)
 st.session_state.setdefault("last_click", None)
 st.session_state.setdefault("last_globe_sel", None)
-st.session_state.setdefault("globe_nonce", 0)   # new key = fresh globe selection state
+st.session_state.setdefault("globe_nonce", 0)
 st.session_state.setdefault("preset", NO_PRESET)
 
-# Apply a pending preset label BEFORE the sidebar widget is instantiated
 if "pending_preset" in st.session_state:
     st.session_state["preset"] = st.session_state.pop("pending_preset")
 
@@ -446,17 +438,51 @@ def on_preset_change():
         set_location(*coords)
         st.session_state["zoom"] = 5
         st.session_state["globe_nonce"] += 1
+        st.session_state["last_globe_sel"] = None
 
 
 def on_manual_coords():
     set_location(st.session_state["in_lat"], st.session_state["in_lon"])
     st.session_state["preset"] = NO_PRESET
     st.session_state["globe_nonce"] += 1
+    st.session_state["last_globe_sel"] = None
 
 
-# ----------------------------------------------------------------------------
-# 5. UI
-# ----------------------------------------------------------------------------
+def render_globe(var_code):
+    lat_c, lon_c = st.session_state.lat, st.session_state.lon
+    has_sel = st.session_state.has_selected
+    spin_lon = None if has_sel else wrap_lon(lon_c + time.time() * SPIN_DEG_PER_SEC)
+
+    globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, var_code, has_sel, spin_lon)
+    event = st.plotly_chart(
+        globe_fig,
+        key=f"globe_{st.session_state.globe_nonce}",
+        on_select="rerun",
+        selection_mode="points",
+        config={"displayModeBar": False},
+        **STRETCH,
+    )
+    st.caption("💡 Click anywhere on the globe to select a location.")
+
+    try:
+        points = event["selection"]["points"]
+    except (KeyError, TypeError):
+        points = []
+    for p in points:
+        if p.get("curve_number", 0) != 0:
+            continue
+        idx = p.get("point_index", p.get("point_number"))
+        if idx is None or not (0 <= int(idx) < len(g_lats)):
+            continue
+        sel = (float(g_lats[int(idx)]), float(g_lons[int(idx)]))
+        if sel != st.session_state.last_globe_sel:
+            st.session_state.last_globe_sel = sel
+            set_location(*sel)
+            st.session_state["pending_preset"] = NO_PRESET
+            st.rerun()
+        break
+
+
 st.markdown(
     """
 <div class="hero-box">
@@ -518,35 +544,8 @@ with col_map:
     has_sel = st.session_state.has_selected
 
     if view_mode == "🌍 3D Globe":
-        globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, var_code, has_sel)
-        event = st.plotly_chart(
-            globe_fig,
-            key=f"globe_{st.session_state.globe_nonce}",
-            on_select="rerun",
-            selection_mode="points",
-            config={"displayModeBar": False},
-            **STRETCH,
-        )
-        st.caption("💡 Click anywhere on the globe to select a location, or drag to rotate it.")
-
-        # Read the clicked mesh point (trace 0) and adopt it as the new location
-        try:
-            points = event["selection"]["points"]
-        except (KeyError, TypeError):
-            points = []
-        for p in points:
-            if p.get("curve_number", 0) != 0:
-                continue
-            idx = p.get("point_index", p.get("point_number"))
-            if idx is None or not (0 <= int(idx) < len(g_lats)):
-                continue
-            sel = (float(g_lats[int(idx)]), float(g_lons[int(idx)]))
-            if sel != st.session_state.last_globe_sel:
-                st.session_state.last_globe_sel = sel
-                set_location(*sel)
-                st.session_state["preset"] = NO_PRESET
-                st.rerun()
-            break
+        globe_view = st.fragment(run_every=None if has_sel else SPIN_INTERVAL)(render_globe)
+        globe_view(var_code)
     else:
         m = folium.Map(
             location=[lat_c, lon_c],
@@ -568,7 +567,6 @@ with col_map:
             """
         ))
 
-        # Satellite imagery + place labels form ONE base layer, so labels never double up on the street map
         satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
         folium.TileLayer(
             tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -616,12 +614,12 @@ with col_map:
 
         if map_data and map_data.get("last_clicked"):
             click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
-            # Act only on NEW clicks: a stale click must never override a preset choice
             if click != st.session_state.last_click:
                 st.session_state.last_click = click
                 set_location(*click)
                 st.session_state["pending_preset"] = NO_PRESET
                 st.session_state["globe_nonce"] += 1
+                st.session_state["last_globe_sel"] = None
                 st.rerun()
 
 with col_info:
@@ -644,7 +642,6 @@ with col_info:
     st.caption("Click any location on the globe or 2D map to drop a target marker. "
                "Results describe the whole grid cell, not the exact point.")
 
-# --- Data & analysis -------------------------------------------------------
 st.divider()
 
 if year_range[1] - year_range[0] < 9:
@@ -702,7 +699,6 @@ else:
         "are within natural variability for the selected period."
     )
 
-# --- Charts & validation tabs ----------------------------------------------
 is_svalbard = (abs(st.session_state.lat - PRESETS[SVALBARD_NAME][0]) < 0.01
                and abs(st.session_state.lon - PRESETS[SVALBARD_NAME][1]) < 0.01)
 
