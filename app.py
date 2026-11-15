@@ -236,84 +236,145 @@ def build_globe(lat_c, lon_c, var_code, has_selected, nonce):
 
 
 def inject_globle_spin(active):
-    if not active:
-        return
     components.html(
-        """
+        f"""
         <script>
-        (function() {
+        (function() {{
+            const SHOULD_SPIN = {"true" if active else "false"};
             const doc = window.parent.document;
             let rafId = null;
-            let running = true;
+            let autoRotate = SHOULD_SPIN;
+            let isDragging = false;
+            let isRelayouting = false;
             let lastTime = performance.now();
+            let lastFrame = 0;
 
-            function findGlobeContext() {
+            function findGlobeContext() {{
                 const topPlots = doc.querySelectorAll('.js-plotly-plot');
-                for (const p of topPlots) {
-                    if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {
-                        return { plot: p, plotly: window.parent.Plotly, targetDoc: doc };
-                    }
-                }
+                for (const p of topPlots) {{
+                    if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {{
+                        return {{ plot: p, plotly: window.parent.Plotly }};
+                    }}
+                }}
                 const iframes = doc.querySelectorAll('iframe');
-                for (const frame of iframes) {
-                    try {
+                for (const frame of iframes) {{
+                    try {{
                         const win = frame.contentWindow;
                         const fDoc = frame.contentDocument || (win && win.document);
                         if (!fDoc || !win || !win.Plotly) continue;
                         const fPlots = fDoc.querySelectorAll('.js-plotly-plot');
-                        for (const p of fPlots) {
-                            if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {
-                                return { plot: p, plotly: win.Plotly, targetDoc: fDoc };
-                            }
-                        }
-                    } catch (e) {}
-                }
+                        for (const p of fPlots) {{
+                            if (p && p._fullLayout && p._fullLayout.geo && p._fullLayout.geo.projection && p._fullLayout.geo.projection.type === 'orthographic') {{
+                                return {{ plot: p, plotly: win.Plotly }};
+                            }}
+                        }}
+                    }} catch (e) {{}}
+                }}
                 return null;
-            }
+            }}
 
-            function stop() {
-                if (!running) return;
-                running = false;
-                if (rafId) cancelAnimationFrame(rafId);
-            }
-
-            function attachAndSpin() {
+            function attach() {{
                 const ctx = findGlobeContext();
-                if (!ctx) {
-                    if (running) setTimeout(attachAndSpin, 80);
+                if (!ctx) {{
+                    setTimeout(attach, 70);
                     return;
-                }
+                }}
 
-                const { plot, plotly } = ctx;
-                ['mousedown', 'pointerdown', 'touchstart', 'wheel'].forEach(evt => {
-                    plot.addEventListener(evt, stop, { passive: true, capture: true });
-                });
+                const {{ plot, plotly }} = ctx;
+                if (plot.dataset.globleBound === '1') return;
+                plot.dataset.globleBound = '1';
 
-                let lon = (plot._fullLayout.geo.projection.rotation && plot._fullLayout.geo.projection.rotation.lon) || 72.87;
-                const lat = (plot._fullLayout.geo.projection.rotation && plot._fullLayout.geo.projection.rotation.lat) || 18;
+                const rot = (plot._fullLayout.geo.projection && plot._fullLayout.geo.projection.rotation) || {{}};
+                let targetLon = typeof rot.lon === 'number' ? rot.lon : 72.87;
+                let currentLon = targetLon;
+                let targetLat = typeof rot.lat === 'number' ? rot.lat : 18;
+                let currentLat = targetLat;
+
+                const onStartDrag = () => {{
+                    isDragging = true;
+                    autoRotate = false;
+                }};
+                const onEndDrag = () => {{
+                    if (!isDragging) return;
+                    isDragging = false;
+                    const liveRot = (plot._fullLayout.geo.projection && plot._fullLayout.geo.projection.rotation) || {{}};
+                    if (typeof liveRot.lon === 'number') {{
+                        targetLon = liveRot.lon;
+                        currentLon = liveRot.lon;
+                    }}
+                    if (typeof liveRot.lat === 'number') {{
+                        targetLat = liveRot.lat;
+                        currentLat = liveRot.lat;
+                    }}
+                }};
+
+                ['mousedown', 'pointerdown', 'touchstart'].forEach(evt => {{
+                    plot.addEventListener(evt, onStartDrag, {{ passive: true, capture: true }});
+                }});
+                ['mouseup', 'pointerup', 'touchend', 'pointercancel'].forEach(evt => {{
+                    plot.ownerDocument.addEventListener(evt, onEndDrag, {{ passive: true, capture: true }});
+                }});
+
+                if (plot.on) {{
+                    plot.on('plotly_relayout', (ev) => {{
+                        if (isRelayouting || !ev) return;
+                        const r = ev['geo.projection.rotation'];
+                        if (r && typeof r.lon === 'number') {{
+                            targetLon = r.lon;
+                            currentLon = r.lon;
+                        }}
+                        if (r && typeof r.lat === 'number') {{
+                            targetLat = r.lat;
+                            currentLat = r.lat;
+                        }}
+                        if (typeof ev['geo.projection.rotation.lon'] === 'number') {{
+                            targetLon = ev['geo.projection.rotation.lon'];
+                            currentLon = targetLon;
+                        }}
+                        if (typeof ev['geo.projection.rotation.lat'] === 'number') {{
+                            targetLat = ev['geo.projection.rotation.lat'];
+                            currentLat = targetLat;
+                        }}
+                    }});
+                }}
+
+                if (!autoRotate) return;
+
                 lastTime = performance.now();
-
-                function step(now) {
-                    if (!running) return;
+                function step(now) {{
+                    if (!autoRotate || !plot.isConnected) return;
                     const dt = Math.min((now - lastTime) / 1000, 0.05);
                     lastTime = now;
-                    lon = ((lon + 18.0 * dt + 180) % 360) - 180;
-                    try {
-                        plotly.relayout(plot, {
-                            'geo.projection.rotation.lon': lon,
-                            'geo.projection.rotation.lat': lat
-                        });
-                    } catch (e) {
-                        stop();
-                        return;
-                    }
-                    rafId = requestAnimationFrame(step);
-                }
-                rafId = requestAnimationFrame(step);
-            }
 
-            attachAndSpin();
-        })();
+                    if (!isDragging) {{
+                        targetLon += 18.0 * dt;
+                        currentLon += (targetLon - currentLon) * 0.12;
+                        currentLat += (targetLat - currentLat) * 0.12;
+                        const wrappedLon = ((((currentLon + 180) % 360) + 360) % 360) - 180;
+
+                        if (now - lastFrame >= 28) {{
+                            lastFrame = now;
+                            isRelayouting = true;
+                            try {{
+                                plotly.relayout(plot, {{
+                                    'geo.projection.rotation.lon': wrappedLon,
+                                    'geo.projection.rotation.lat': currentLat
+                                }});
+                            }} catch (e) {{
+                                autoRotate = false;
+                                return;
+                            }} finally {{
+                                isRelayouting = false;
+                            }}
+                        }}
+                    }}
+                    rafId = requestAnimationFrame(step);
+                }}
+                rafId = requestAnimationFrame(step);
+            }}
+
+            attach();
+        }})();
         </script>
         """,
         height=0,
