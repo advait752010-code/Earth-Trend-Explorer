@@ -1,6 +1,5 @@
 import time
 from pathlib import Path
-
 import folium
 import numpy as np
 import pandas as pd
@@ -364,30 +363,25 @@ with col_map:
         control_scale=True,
     )
 
+    # Bundle satellite imagery + place labels into a single exclusive base layer
+    satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri, Maxar, Earthstar Geographics",
-        name="Satellite Imagery",
-        overlay=False,
-        control=True,
-        show=True,
-    ).add_to(m)
+    ).add_to(satellite_group)
+    folium.TileLayer(
+        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
+    ).add_to(satellite_group)
+    satellite_group.add_to(m)
 
+    # Street & terrain map already includes its own native labels
     folium.TileLayer(
         tiles="OpenStreetMap",
         name="Street & Terrain Map",
         overlay=False,
         control=True,
         show=False,
-    ).add_to(m)
-
-    folium.TileLayer(
-        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri",
-        name="Place Labels (turn off for Street Map)",
-        overlay=True,
-        control=True,
-        show=True,
     ).add_to(m)
 
     bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
