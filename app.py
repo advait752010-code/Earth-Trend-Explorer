@@ -254,6 +254,7 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
     resid = y - fitted
 
     mk_res = mk.hamed_rao_modification_test(y)
+    p_val = getattr(mk_res, "p", getattr(mk_res, "p_value", 0.05))
 
     rng = np.random.default_rng(seed)
     n_blocks = int(np.ceil(n / block))
@@ -269,7 +270,7 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
         "ci_low": ci_low * 120,
         "ci_high": ci_high * 120,
         "total_change": slope * (t.max() - t.min()),
-        "mk_p": float(mk_res.p),
+        "mk_p": float(p_val),
         "trend_line": fitted,
     }
 
@@ -492,7 +493,7 @@ elif state == "borderline":
     )
 else:
     st.info(
-        f"➖ **No statistically significant trend** (p = {res['mk_p']:.4f}). Changes at this location "
+        f"**No statistically significant trend** (p = {res['mk_p']:.4f}). Changes at this location "
         "are within natural variability for the selected period."
     )
 
