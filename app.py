@@ -781,22 +781,13 @@ def render_2d_map(var_code):
 
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
 
-    try:
-        map_data = st_folium(
-            m,
-            height=394,
-            use_container_width=True,
-            returned_objects=["last_clicked"],
-            key="interactive_map",
-        )
-    except TypeError:
-        map_data = st_folium(
-            m,
-            height=394,
-            width=700,
-            returned_objects=["last_clicked"],
-            key="interactive_map",
-        )
+map_data = st_folium(
+        m,
+        height=394,
+        width=None,
+        returned_objects=["last_clicked"],
+        key="interactive_map",
+    )
 
     if map_data and map_data.get("last_clicked"):
         click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
