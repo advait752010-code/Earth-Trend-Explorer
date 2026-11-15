@@ -261,10 +261,10 @@ with col_map:
         control_scale=True,
     )
 
-    # 1. Clean Light Map (great for borders & text)
+    # 1. Clean Street Map (great for borders & text)
     folium.TileLayer(
-        tiles="CartoDB positron",
-        name="Clean Light Map",
+        tiles="OpenStreetMap",
+        name="Street & Terrain Map",
         overlay=False,
         control=True,
     ).add_to(m)
@@ -278,10 +278,10 @@ with col_map:
         control=True,
     ).add_to(m)
 
-    # Subtle country borders & city labels over satellite imagery
+    # Free Esri country borders & place labels overlay (no API key required)
     folium.TileLayer(
-        tiles="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png",
-        attr="CartoDB",
+        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
         name="Place Labels",
         overlay=True,
         control=True,
