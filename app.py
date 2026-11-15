@@ -299,6 +299,7 @@ html, body { margin: 0; padding: 0; background: #050914; overflow: hidden; }
 </html>
 """
 
+
 def prepare_globe_dir():
     for base in (Path(tempfile.gettempdir()), APP_DIR):
         try:
@@ -781,7 +782,7 @@ def render_2d_map(var_code):
 
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
 
-map_data = st_folium(
+    map_data = st_folium(
         m,
         height=394,
         width=None,
