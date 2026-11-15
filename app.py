@@ -1,3 +1,4 @@
+import json
 import time
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import plotly.graph_objects as go
 import pymannkendall as mk
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from packaging.version import Version
 from scipy import stats
 from streamlit_folium import st_folium
@@ -19,113 +21,117 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Newer Streamlit versions replace use_container_width with width="stretch"
 NEW_WIDTH_API = Version(st.__version__) >= Version("1.50.0")
 STRETCH = {"width": "stretch"} if NEW_WIDTH_API else {"use_container_width": True}
 
 APP_DIR = Path(__file__).resolve().parent
 GIOVANNI_CSV = APP_DIR / "giovanni_svalbard_validation.csv"
 
-# ----------------------------------------------------------------------------
-# 0. Custom Mission-Control UI Styling
-# ----------------------------------------------------------------------------
 st.markdown(
     """
     <style>
-    /* Tighten top padding for a clean dashboard feel */
     .block-container {
-        padding-top: 1.6rem;
+        padding-top: 1.4rem;
         padding-bottom: 2.5rem;
     }
 
-    /* Hero banner */
     .hero-box {
-        background: linear-gradient(135deg, #0b132b 0%, #1c2541 60%, #111b33 100%);
-        border: 1px solid rgba(99, 110, 250, 0.35);
-        border-radius: 14px;
-        padding: 1.25rem 1.6rem;
+        background: radial-gradient(circle at 85% 20%, rgba(56, 189, 248, 0.16), transparent 45%),
+                    linear-gradient(135deg, #070d1f 0%, #111c3a 55%, #0c1428 100%);
+        border: 1px solid rgba(99, 102, 241, 0.35);
+        border-radius: 16px;
+        padding: 1.35rem 1.75rem;
         margin-bottom: 1.25rem;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
     }
     .hero-badge {
         display: inline-block;
-        font-size: 0.75rem;
+        font-size: 0.72rem;
         font-weight: 700;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
-        color: #5bc0be;
-        background: rgba(91, 192, 190, 0.12);
-        border: 1px solid rgba(91, 192, 190, 0.35);
-        padding: 0.2rem 0.65rem;
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.32);
+        padding: 0.22rem 0.7rem;
         border-radius: 999px;
-        margin-bottom: 0.45rem;
+        margin-bottom: 0.5rem;
     }
     .hero-title {
-        font-size: 1.9rem;
+        font-size: 2rem;
         font-weight: 800;
+        letter-spacing: -0.02em;
         color: #f8fafc;
         margin: 0;
-        line-height: 1.2;
+        line-height: 1.15;
     }
     .hero-sub {
         color: #cbd5e1;
         font-size: 0.96rem;
-        margin-top: 0.35rem;
+        margin-top: 0.4rem;
         margin-bottom: 0;
+        max-width: 780px;
     }
 
-    /* Styled KPI Metric Cards */
     div[data-testid="stMetric"] {
-        background: rgba(17, 25, 40, 0.72);
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 12px;
-        padding: 0.85rem 1rem;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        background: linear-gradient(180deg, rgba(17, 25, 40, 0.85) 0%, rgba(11, 17, 30, 0.9) 100%);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 14px;
+        padding: 0.95rem 1.1rem;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+        transition: transform 0.18s ease, border-color 0.18s ease;
+    }
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+        border-color: rgba(56, 189, 248, 0.45);
     }
     div[data-testid="stMetricLabel"] {
-        font-size: 0.82rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
         color: #94a3b8;
     }
     div[data-testid="stMetricValue"] {
-        font-size: 1.45rem;
-        font-weight: 700;
+        font-size: 1.48rem;
+        font-weight: 800;
+        color: #f8fafc;
     }
 
-    /* Target Info Card */
     .target-card {
-        background: rgba(17, 25, 40, 0.68);
+        background: linear-gradient(180deg, rgba(17, 25, 40, 0.82) 0%, rgba(11, 17, 30, 0.88) 100%);
         border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 12px;
-        padding: 1rem 1.15rem;
-        margin-bottom: 0.75rem;
+        border-radius: 14px;
+        padding: 1.15rem 1.25rem;
+        margin-bottom: 0.85rem;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
     }
     .target-label {
-        font-size: 0.74rem;
+        font-size: 0.72rem;
+        font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #94a3b8;
+        letter-spacing: 0.08em;
+        color: #64748b;
         margin-bottom: 0.15rem;
     }
     .target-val {
-        font-size: 1.02rem;
+        font-size: 1.04rem;
         font-weight: 600;
         color: #f1f5f9;
-        margin-bottom: 0.65rem;
+        margin-bottom: 0.75rem;
     }
 
-    /* Polished Tab Bar */
     button[data-baseweb="tab"] {
         font-weight: 600;
         font-size: 0.92rem;
+        padding-top: 0.6rem;
+        padding-bottom: 0.6rem;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ----------------------------------------------------------------------------
-# 1. NASA POWER variable catalog & presets
-# ----------------------------------------------------------------------------
 VARIABLES = {
     "T2M": {
         "name": "Air Temperature (2m above surface)",
@@ -167,7 +173,7 @@ VARIABLES = {
 
 SVALBARD_NAME = "Arctic (Svalbard, Norway)"
 PRESETS = {
-    "Custom (Click Map/Globe)": None,
+    "Select or Click Map/Globe": None,
     "Amazon Rainforest (Manaus)": (-3.12, -60.02),
     "Sahara Desert (Tamanrasset)": (22.79, 5.52),
     "Mumbai Coast, India": (19.07, 72.87),
@@ -176,15 +182,11 @@ PRESETS = {
     "Borneo Rainforest (Indonesia)": (-1.25, 116.83),
 }
 
-MIN_MONTHS = 36  # minimum record length we are willing to analyze
+MIN_MONTHS = 36
 ALPHA = 0.05
 
 
-# ----------------------------------------------------------------------------
-# 2. Helpers & data access
-# ----------------------------------------------------------------------------
 def wrap_lon(lon):
-    """Map any longitude into [-180, 180)."""
     return ((lon + 180) % 360) - 180
 
 
@@ -194,7 +196,6 @@ def fmt_coords(lat, lon):
 
 
 def grid_cell(lat, lon, var_code):
-    """Approximate footprint of the source grid cell containing the selected point."""
     if var_code == "ALLSKY_SFC_SW_DWN":
         dlat, dlon = 1.0, 1.0
         label = "Approximate CERES-based solar grid cell (~1° × 1°)"
@@ -209,142 +210,175 @@ def grid_cell(lat, lon, var_code):
 
 
 @st.cache_data(show_spinner=False)
-def globe_click_mesh(step=2):
-    """Create a 2-degree global lat/lon mesh so any click on the 3D globe selects coordinates."""
-    lats = np.arange(-88, 89, step)
+def globe_click_mesh(step=5):
+    lats = np.arange(-85, 86, step)
     lons = np.arange(-180, 180, step)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
     return lat_grid.ravel(), lon_grid.ravel()
 
 
-def build_3d_globe(lat_c, lon_c, var_code, auto_spin=False):
-    """Build an interactive 3D orthographic globe with optional slow auto-rotation."""
-    g_lats, g_lons = globe_click_mesh(step=2)
-    bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
-    south, west = bounds[0]
-    north, east = bounds[1]
-
+@st.cache_data(show_spinner=False)
+def build_3d_globe_spec(lat_c, lon_c, var_code, has_selected):
+    g_lats, g_lons = globe_click_mesh(step=5)
     fig = go.Figure()
 
-    # 1. Invisible clickable global mesh (lets users click anywhere on the globe)
     fig.add_trace(go.Scattergeo(
         lat=g_lats,
         lon=g_lons,
         mode="markers",
-        marker=dict(size=7, opacity=0.001, color="#ffffff"),
-        hovertemplate="Click to analyze: %{lat:.1f}°, %{lon:.1f}°<extra></extra>",
+        marker=dict(size=9, opacity=0.001, color="#ffffff"),
+        hovertemplate="Click to sample: %{lat:.0f}°, %{lon:.0f}°<extra></extra>",
         showlegend=False,
     ))
 
-    # 2. Approximate NASA MERRA-2 / CERES grid cell footprint on the 3D globe
-    fig.add_trace(go.Scattergeo(
-        lat=[south, north, north, south, south],
-        lon=[west, west, east, east, west],
-        mode="lines",
-        line=dict(color="#EF553B", width=2.2),
-        fill="toself",
-        fillcolor="rgba(239, 85, 59, 0.28)",
-        hoverinfo="text",
-        text=cell_label,
-        showlegend=False,
-    ))
+    if has_selected:
+        bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
+        south, west = bounds[0]
+        north, east = bounds[1]
 
-    # 3. Target crosshair marker
-    fig.add_trace(go.Scattergeo(
-        lat=[lat_c],
-        lon=[lon_c],
-        mode="markers",
-        marker=dict(size=13, color="#EF553B", symbol="circle-cross",
-                    line=dict(color="white", width=1.8)),
-        hovertemplate=f"Target: {fmt_coords(lat_c, lon_c)}<extra></extra>",
-        showlegend=False,
-    ))
+        fig.add_trace(go.Scattergeo(
+            lat=[south, north, north, south, south],
+            lon=[west, west, east, east, west],
+            mode="lines",
+            line=dict(color="#EF553B", width=2.2),
+            fill="toself",
+            fillcolor="rgba(239, 85, 59, 0.28)",
+            hoverinfo="text",
+            text=cell_label,
+            showlegend=False,
+        ))
 
-    # Build slow smooth rotation frames if auto_spin is enabled
+        fig.add_trace(go.Scattergeo(
+            lat=[lat_c],
+            lon=[lon_c],
+            mode="markers",
+            marker=dict(size=13, color="#EF553B", symbol="circle-cross",
+                        line=dict(color="white", width=1.8)),
+            hovertemplate=f"Target: {fmt_coords(lat_c, lon_c)}<extra></extra>",
+            showlegend=False,
+        ))
+
+    n_frames = 36
     frames = []
-    updatemenus = []
-    if auto_spin:
-        n_frames = 72  # 5 degrees per step for ultra-smooth slow rotation
-        for k in range(n_frames):
-            rot_lon = wrap_lon(lon_c + k * (360.0 / n_frames))
-            frames.append(go.Frame(
-                name=f"rot_{k}",
-                layout=dict(
-                    geo=dict(
-                        projection_rotation=dict(lat=lat_c * 0.65, lon=rot_lon, roll=0)
-                    )
-                ),
-            ))
-        updatemenus = [dict(
-            type="buttons",
-            showactive=False,
-            x=0.02,
-            y=0.04,
-            xanchor="left",
-            yanchor="bottom",
-            bgcolor="rgba(15, 23, 42, 0.78)",
-            bordercolor="rgba(148, 163, 184, 0.35)",
-            borderwidth=1,
-            font=dict(color="#f8fafc", size=12),
-            buttons=[
-                dict(
-                    label="▶ Spin",
-                    method="animate",
-                    args=[None, dict(
-                        frame=dict(duration=450, redraw=True),
-                        fromcurrent=True,
-                        transition=dict(duration=450, easing="linear"),
-                        mode="immediate",
-                    )],
-                ),
-                dict(
-                    label="⏸ Pause",
-                    method="animate",
-                    args=[[None], dict(
-                        frame=dict(duration=0, redraw=False),
-                        mode="immediate",
-                        transition=dict(duration=0),
-                    )],
-                ),
-            ],
-        )]
+    for k in range(n_frames):
+        rot_lon = wrap_lon(lon_c + k * (360.0 / n_frames))
+        frames.append(go.Frame(
+            name=f"r{k}",
+            layout=dict(
+                geo=dict(
+                    projection_rotation=dict(lat=lat_c * 0.5, lon=rot_lon, roll=0)
+                )
+            ),
+        ))
 
     fig.update_geos(
         projection_type="orthographic",
         projection_rotation=dict(lat=lat_c, lon=lon_c, roll=0),
         showland=True,
-        landcolor="rgb(44, 78, 56)",
+        landcolor="rgb(40, 74, 54)",
         showocean=True,
-        oceancolor="rgb(11, 34, 64)",
+        oceancolor="rgb(10, 30, 58)",
         showlakes=True,
-        lakecolor="rgb(18, 50, 92)",
+        lakecolor="rgb(16, 46, 86)",
         showrivers=False,
         showcountries=True,
-        countrycolor="rgba(226, 232, 240, 0.42)",
-        countrywidth=0.75,
+        countrycolor="rgba(226, 232, 240, 0.38)",
+        countrywidth=0.7,
         showcoastlines=True,
-        coastlinecolor="rgba(248, 250, 252, 0.72)",
+        coastlinecolor="rgba(248, 250, 252, 0.7)",
         coastlinewidth=0.85,
         bgcolor="rgba(0,0,0,0)",
     )
 
-    if frames:
-        fig.frames = frames
-
+    fig.frames = frames
     fig.update_layout(
-        height=400,
+        height=390,
         margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor="rgba(6, 11, 25, 0.85)",
-        clickmode="event+select",
-        uirevision="globe_view" if not auto_spin else f"globe_spin_{lat_c}_{lon_c}",
-        updatemenus=updatemenus,
+        paper_bgcolor="rgba(0,0,0,0)",
+        clickmode="event",
     )
-    return fig
+    return fig.to_json()
+
+
+def render_spinning_globe(lat_c, lon_c, var_code, has_selected):
+    fig_json = build_3d_globe_spec(lat_c, lon_c, var_code, has_selected)
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8" />
+        <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+        <style>
+            html, body {{
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                height: 390px;
+                overflow: hidden;
+                background: radial-gradient(circle at center, #0e1a36 0%, #050914 100%);
+                border-radius: 14px;
+            }}
+            #globe {{
+                width: 100%;
+                height: 390px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div id="globe"></div>
+        <script>
+            const spec = {fig_json};
+            const el = document.getElementById("globe");
+            let spinning = true;
+
+            function startSpin() {{
+                if (!spinning) return;
+                Plotly.animate(el, null, {{
+                    frame: {{ duration: 600, redraw: true }},
+                    transition: {{ duration: 600, easing: "linear" }},
+                    fromcurrent: true,
+                    mode: "immediate"
+                }});
+            }}
+
+            Plotly.newPlot(el, spec.data, spec.layout, {{
+                displayModeBar: false,
+                responsive: true
+            }}).then(() => {{
+                if (spec.frames && spec.frames.length) {{
+                    Plotly.addFrames(el, spec.frames).then(() => {{
+                        startSpin();
+                    }});
+                }}
+
+                el.on("plotly_relayout", () => {{
+                    if (spinning) {{
+                        spinning = false;
+                        Plotly.animate(el, [], {{ mode: "immediate" }});
+                    }}
+                }});
+
+                el.on("plotly_click", (evt) => {{
+                    if (!evt || !evt.points || !evt.points.length) return;
+                    const pt = evt.points[0];
+                    if (typeof pt.lat === "number" && typeof pt.lon === "number") {{
+                        const url = new URL(window.parent.location.href);
+                        url.searchParams.set("glat", pt.lat.toFixed(2));
+                        url.searchParams.set("glon", pt.lon.toFixed(2));
+                        url.searchParams.set("gts", Date.now().toString());
+                        window.parent.location.href = url.toString();
+                    }}
+                }});
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    components.html(html_code, height=394)
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def fetch_nasa_data(lat, lon, param, start_year, end_year):
-    """Download monthly NASA POWER data and compute deseasonalized anomalies."""
     url = "https://power.larc.nasa.gov/api/temporal/monthly/point"
     params = {
         "parameters": param,
@@ -402,7 +436,6 @@ def fetch_nasa_data(lat, lon, param, start_year, end_year):
 
 @st.cache_data(show_spinner=False)
 def load_giovanni_validation():
-    """Load the Giovanni export from the repository, skipping its metadata header lines."""
     if not GIOVANNI_CSV.exists():
         return None
     try:
@@ -419,7 +452,6 @@ def load_giovanni_validation():
 
 
 def compare_with_giovanni(val_df, power_df):
-    """Compare NASA POWER monthly air temperature with a Giovanni T2M export."""
     tcol = val_df.columns[0]
     num_cols = [c for c in val_df.columns[1:] if pd.api.types.is_numeric_dtype(val_df[c])]
     if not num_cols:
@@ -458,12 +490,8 @@ def compare_with_giovanni(val_df, power_df):
     return merged, metrics
 
 
-# ----------------------------------------------------------------------------
-# 3. Statistics & analysis
-# ----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def analyze_trend(df, n_boot=300, block=12, seed=42):
-    """Robust trend analysis for autocorrelated monthly anomalies."""
     y = df["Anomaly"].to_numpy(dtype=float)
     t = df["t"].to_numpy(dtype=float)
     n = len(y)
@@ -511,7 +539,6 @@ def verdict(res):
 
 
 def style_plotly_chart(fig, height=410):
-    """Apply cohesive dark dashboard styling to Plotly charts."""
     fig.update_layout(
         height=height,
         paper_bgcolor="rgba(0,0,0,0)",
@@ -525,15 +552,28 @@ def style_plotly_chart(fig, height=410):
     return fig
 
 
-# ----------------------------------------------------------------------------
-# 4. Session state & callbacks
-# ----------------------------------------------------------------------------
 st.session_state.setdefault("lat", 19.07)
 st.session_state.setdefault("lon", 72.87)
 st.session_state.setdefault("zoom", 3)
+st.session_state.setdefault("has_selected", False)
 st.session_state.setdefault("last_click", None)
-st.session_state.setdefault("last_globe_click", None)
-st.session_state.setdefault("preset", "Mumbai Coast, India")
+st.session_state.setdefault("last_globe_ts", None)
+st.session_state.setdefault("preset", "Select or Click Map/Globe")
+
+qp = st.query_params
+if "glat" in qp and "glon" in qp:
+    g_ts = qp.get("gts", "")
+    if g_ts != st.session_state.last_globe_ts:
+        try:
+            st.session_state.last_globe_ts = g_ts
+            st.session_state.lat = round(float(qp["glat"]), 2)
+            st.session_state.lon = round(wrap_lon(float(qp["glon"])), 2)
+            st.session_state.zoom = max(st.session_state.zoom, 5)
+            st.session_state.has_selected = True
+            st.session_state["preset"] = "Select or Click Map/Globe"
+        except ValueError:
+            pass
+    st.query_params.clear()
 
 if "pending_preset" in st.session_state:
     st.session_state["preset"] = st.session_state.pop("pending_preset")
@@ -544,19 +584,17 @@ def on_preset_change():
     if coords is not None:
         st.session_state["lat"], st.session_state["lon"] = coords
         st.session_state["zoom"] = 5
+        st.session_state["has_selected"] = True
 
 
-# ----------------------------------------------------------------------------
-# 5. UI layout
-# ----------------------------------------------------------------------------
 st.markdown(
     """
     <div class="hero-box">
         <div class="hero-badge">NASA POWER · MERRA-2 & CERES</div>
         <h1 class="hero-title">🌍 Climate Signal</h1>
         <p class="hero-sub">
-            Spin the 3D globe or click anywhere on the 2D satellite map to separate statistically significant
-            environmental trends from natural seasonal variability.
+            Click anywhere on the spinning 3D globe or switch to the 2D satellite map to separate
+            statistically significant environmental trends from natural seasonal variability.
         </p>
     </div>
     """,
@@ -594,57 +632,21 @@ with st.sidebar:
 v_meta = VARIABLES[var_code]
 unit = v_meta["unit"]
 
-# --- Map / Globe & info columns --------------------------------------------
 col_map, col_info = st.columns([2.15, 1], gap="large")
 with col_map:
-    ctrl_left, ctrl_right = st.columns([2.2, 1])
-    with ctrl_left:
-        view_mode = st.radio(
-            "Spatial View",
-            options=["🌍 3D Interactive Globe", "🗺️ 2D Satellite & Street Map"],
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-    with ctrl_right:
-        if view_mode == "🌍 3D Interactive Globe":
-            auto_spin = st.toggle("🔄 Auto-Spin Globe", value=False,
-                                  help="Enables smooth slow rotation controls on the 3D globe.")
-        else:
-            auto_spin = False
+    view_mode = st.radio(
+        "Spatial View",
+        options=["🌍 3D Spinning Globe", "🗺️ 2D Satellite & Street Map"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
     lat_c, lon_c = st.session_state.lat, st.session_state.lon
+    has_sel = st.session_state.has_selected
 
-    if view_mode == "🌍 3D Interactive Globe":
-        globe_fig = build_3d_globe(lat_c, lon_c, var_code, auto_spin=auto_spin)
-        if auto_spin:
-            st.plotly_chart(globe_fig, **STRETCH)
-            st.caption("💡 Click **▶ Spin** in the bottom-left corner of the globe for slow rotation, "
-                       "or turn off **Auto-Spin** to click coordinates directly.")
-            selection = None
-        else:
-            try:
-                selection = st.plotly_chart(
-                    globe_fig,
-                    on_select="rerun",
-                    selection_mode="points",
-                    key="interactive_globe",
-                    **STRETCH,
-                )
-            except TypeError:
-                st.plotly_chart(globe_fig, **STRETCH)
-                selection = None
-            st.caption("💡 Drag to spin manually, scroll to zoom, and click anywhere on Earth to analyze.")
-
-        if selection and selection.get("selection", {}).get("points"):
-            pt = selection["selection"]["points"][0]
-            if "lat" in pt and "lon" in pt:
-                g_click = (round(float(pt["lat"]), 2), round(wrap_lon(float(pt["lon"])), 2))
-                if g_click != st.session_state.last_globe_click:
-                    st.session_state.last_globe_click = g_click
-                    st.session_state.lat, st.session_state.lon = g_click
-                    st.session_state.zoom = max(st.session_state.zoom, 5)
-                    st.session_state["pending_preset"] = "Custom (Click Map/Globe)"
-                    st.rerun()
+    if view_mode == "🌍 3D Spinning Globe":
+        render_spinning_globe(lat_c, lon_c, var_code, has_sel)
+        st.caption("💡 Click anywhere on the globe to sample a location, or drag to inspect manually.")
     else:
         m = folium.Map(
             location=[lat_c, lon_c],
@@ -653,7 +655,6 @@ with col_map:
             control_scale=True,
         )
 
-        # Bundle satellite imagery + place labels into a single exclusive base layer
         satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
         folium.TileLayer(
             tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -665,7 +666,6 @@ with col_map:
         ).add_to(satellite_group)
         satellite_group.add_to(m)
 
-        # Street & terrain map already includes its own native labels
         folium.TileLayer(
             tiles="OpenStreetMap",
             name="Street & Terrain Map",
@@ -674,30 +674,31 @@ with col_map:
             show=False,
         ).add_to(m)
 
-        bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
-        folium.Rectangle(
-            bounds=bounds,
-            color="#EF553B",
-            weight=2,
-            fill=True,
-            fill_color="#EF553B",
-            fill_opacity=0.15,
-            tooltip=cell_label,
-        ).add_to(m)
+        if has_sel:
+            bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
+            folium.Rectangle(
+                bounds=bounds,
+                color="#EF553B",
+                weight=2,
+                fill=True,
+                fill_color="#EF553B",
+                fill_opacity=0.15,
+                tooltip=cell_label,
+            ).add_to(m)
 
-        folium.Marker(
-            [lat_c, lon_c],
-            tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
-            icon=folium.Icon(color="red", icon="crosshairs", prefix="fa"),
-        ).add_to(m)
+            folium.Marker(
+                [lat_c, lon_c],
+                tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
+                icon=folium.Icon(color="red", icon="crosshairs", prefix="fa"),
+            ).add_to(m)
 
         folium.LayerControl(position="topright", collapsed=True).add_to(m)
 
         try:
-            map_data = st_folium(m, height=400, use_container_width=True,
+            map_data = st_folium(m, height=394, use_container_width=True,
                                  returned_objects=["last_clicked"], key="interactive_map")
         except TypeError:
-            map_data = st_folium(m, height=400, width=700,
+            map_data = st_folium(m, height=394, width=700,
                                  returned_objects=["last_clicked"], key="interactive_map")
 
         if map_data and map_data.get("last_clicked"):
@@ -707,15 +708,21 @@ with col_map:
                 st.session_state.lat = click[0]
                 st.session_state.lon = round(wrap_lon(click[1]), 4)
                 st.session_state.zoom = max(st.session_state.zoom, 5)
-                st.session_state["pending_preset"] = "Custom (Click Map/Globe)"
+                st.session_state.has_selected = True
+                st.session_state["pending_preset"] = "Select or Click Map/Globe"
                 st.rerun()
 
 with col_info:
+    coord_display = (
+        f"📍 {fmt_coords(st.session_state.lat, st.session_state.lon)}"
+        if has_sel
+        else f"📍 {fmt_coords(st.session_state.lat, st.session_state.lon)} (Default)"
+    )
     st.markdown(
         f"""
         <div class="target-card">
             <div class="target-label">Selected Coordinates</div>
-            <div class="target-val">📍 {fmt_coords(st.session_state.lat, st.session_state.lon)}</div>
+            <div class="target-val">{coord_display}</div>
             <div class="target-label">Earth Science Variable</div>
             <div class="target-val">{v_meta['name']}</div>
             <div class="target-label">NASA Source Dataset</div>
@@ -725,10 +732,8 @@ with col_info:
         unsafe_allow_html=True,
     )
     st.info(v_meta["desc"])
-    st.caption("The red footprint shows the approximate satellite/reanalysis grid cell. "
-               "Trends represent the entire grid cell, not a single weather station.")
+    st.caption("Click any location on the globe or 2D map to drop a target marker and view its satellite grid cell.")
 
-# --- Data & analysis -------------------------------------------------------
 st.divider()
 
 if year_range[1] - year_range[0] < 9:
@@ -760,7 +765,6 @@ with st.spinner("Running trend statistics..."):
 
 state = verdict(res)
 
-# --- Verdict metrics -------------------------------------------------------
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Rate of Change (Sen's slope)", f"{res['slope_decade']:+.3f} {unit}/decade")
 m2.metric("95% Interval (block bootstrap)", f"{res['ci_low']:+.3f} to {res['ci_high']:+.3f}",
@@ -787,7 +791,6 @@ else:
         "are within natural variability for the selected period."
     )
 
-# --- Charts & validation tabs ----------------------------------------------
 is_svalbard = (abs(st.session_state.lat - PRESETS[SVALBARD_NAME][0]) < 0.01
                and abs(st.session_state.lon - PRESETS[SVALBARD_NAME][1]) < 0.01)
 
@@ -891,7 +894,6 @@ if is_svalbard:
             with st.expander("Show raw Giovanni file"):
                 st.dataframe(val_df, **STRETCH)
 
-# --- Limitations -----------------------------------------------------------
 with st.expander("⚠️ How to interpret these results (limitations)"):
     st.markdown(
         "- **Grid cell, not a point:** NASA POWER draws on MERRA-2 (~0.5° × 0.625°, roughly 55-70 km) "
