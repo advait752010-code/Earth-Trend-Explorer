@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 import pymannkendall as mk
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from packaging.version import Version
 from scipy import stats
 from streamlit_folium import st_folium
@@ -20,6 +19,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Newer Streamlit versions replace use_container_width with width="stretch"
 NEW_WIDTH_API = Version(st.__version__) >= Version("1.50.0")
 STRETCH = {"width": "stretch"} if NEW_WIDTH_API else {"use_container_width": True}
 
@@ -28,110 +28,63 @@ GIOVANNI_CSV = APP_DIR / "giovanni_svalbard_validation.csv"
 
 st.markdown(
     """
-    <style>
-.block-container {
-        padding-top: 3.6rem;
-        padding-bottom: 2.5rem;
-    }
-
-    .hero-box {
-        background: radial-gradient(circle at 85% 20%, rgba(56, 189, 248, 0.16), transparent 45%),
-                    linear-gradient(135deg, #070d1f 0%, #111c3a 55%, #0c1428 100%);
-        border: 1px solid rgba(99, 102, 241, 0.35);
-        border-radius: 16px;
-        padding: 1.35rem 1.75rem;
-        margin-top: 0.5rem;
-        margin-bottom: 1.25rem;
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-    }
-    .hero-badge {
-        display: inline-block;
-        font-size: 0.72rem;
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: #38bdf8;
-        background: rgba(56, 189, 248, 0.12);
-        border: 1px solid rgba(56, 189, 248, 0.32);
-        padding: 0.22rem 0.7rem;
-        border-radius: 999px;
-        margin-bottom: 0.5rem;
-    }
-    .hero-title {
-        font-size: 2rem;
-        font-weight: 800;
-        letter-spacing: -0.02em;
-        color: #f8fafc;
-        margin: 0;
-        line-height: 1.15;
-    }
-    .hero-sub {
-        color: #cbd5e1;
-        font-size: 0.96rem;
-        margin-top: 0.4rem;
-        margin-bottom: 0;
-        max-width: 780px;
-    }
-
-    div[data-testid="stMetric"] {
-        background: linear-gradient(180deg, rgba(17, 25, 40, 0.85) 0%, rgba(11, 17, 30, 0.9) 100%);
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        border-radius: 14px;
-        padding: 0.95rem 1.1rem;
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
-        transition: transform 0.18s ease, border-color 0.18s ease;
-    }
-    div[data-testid="stMetric"]:hover {
-        transform: translateY(-2px);
-        border-color: rgba(56, 189, 248, 0.45);
-    }
-    div[data-testid="stMetricLabel"] {
-        font-size: 0.8rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: #94a3b8;
-    }
-    div[data-testid="stMetricValue"] {
-        font-size: 1.48rem;
-        font-weight: 800;
-        color: #f8fafc;
-    }
-
-    .target-card {
-        background: linear-gradient(180deg, rgba(17, 25, 40, 0.82) 0%, rgba(11, 17, 30, 0.88) 100%);
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 14px;
-        padding: 1.15rem 1.25rem;
-        margin-bottom: 0.85rem;
-        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
-    }
-    .target-label {
-        font-size: 0.72rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #64748b;
-        margin-bottom: 0.15rem;
-    }
-    .target-val {
-        font-size: 1.04rem;
-        font-weight: 600;
-        color: #f1f5f9;
-        margin-bottom: 0.75rem;
-    }
-
-    button[data-baseweb="tab"] {
-        font-weight: 600;
-        font-size: 0.92rem;
-        padding-top: 0.6rem;
-        padding-bottom: 0.6rem;
-    }
-    </style>
-    """,
+<style>
+.block-container { padding-top: 3.6rem; padding-bottom: 2.5rem; }
+.hero-box {
+    background: radial-gradient(circle at 85% 20%, rgba(56, 189, 248, 0.16), transparent 45%),
+                linear-gradient(135deg, #070d1f 0%, #111c3a 55%, #0c1428 100%);
+    border: 1px solid rgba(99, 102, 241, 0.35);
+    border-radius: 16px;
+    padding: 1.35rem 1.75rem;
+    margin-top: 0.5rem;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.hero-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #38bdf8;
+    background: rgba(56, 189, 248, 0.12);
+    border: 1px solid rgba(56, 189, 248, 0.32);
+    padding: 0.22rem 0.7rem;
+    border-radius: 999px;
+    margin-bottom: 0.5rem;
+}
+.hero-title { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; color: #f8fafc; margin: 0; line-height: 1.15; }
+.hero-sub { color: #cbd5e1; font-size: 0.96rem; margin-top: 0.4rem; margin-bottom: 0; max-width: 780px; }
+div[data-testid="stMetric"] {
+    background: linear-gradient(180deg, rgba(17, 25, 40, 0.85) 0%, rgba(11, 17, 30, 0.9) 100%);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 14px;
+    padding: 0.95rem 1.1rem;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+    transition: transform 0.18s ease, border-color 0.18s ease;
+}
+div[data-testid="stMetric"]:hover { transform: translateY(-2px); border-color: rgba(56, 189, 248, 0.45); }
+div[data-testid="stMetricLabel"] { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; }
+div[data-testid="stMetricValue"] { font-size: 1.48rem; font-weight: 800; color: #f8fafc; }
+.target-card {
+    background: linear-gradient(180deg, rgba(17, 25, 40, 0.82) 0%, rgba(11, 17, 30, 0.88) 100%);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 14px;
+    padding: 1.15rem 1.25rem;
+    margin-bottom: 0.85rem;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+}
+.target-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 0.15rem; }
+.target-val { font-size: 1.04rem; font-weight: 600; color: #f1f5f9; margin-bottom: 0.75rem; }
+button[data-baseweb="tab"] { font-weight: 600; font-size: 0.92rem; padding-top: 0.6rem; padding-bottom: 0.6rem; }
+</style>
+""",
     unsafe_allow_html=True,
 )
 
+# ----------------------------------------------------------------------------
+# 1. Variables & presets
+# ----------------------------------------------------------------------------
 VARIABLES = {
     "T2M": {
         "name": "Air Temperature (2m above surface)",
@@ -171,9 +124,10 @@ VARIABLES = {
     },
 }
 
+NO_PRESET = "Select or Click Map/Globe"
 SVALBARD_NAME = "Arctic (Svalbard, Norway)"
 PRESETS = {
-    "Select or Click Map/Globe": None,
+    NO_PRESET: None,
     "Amazon Rainforest (Manaus)": (-3.12, -60.02),
     "Sahara Desert (Tamanrasset)": (22.79, 5.52),
     "Mumbai Coast, India": (19.07, 72.87),
@@ -186,6 +140,9 @@ MIN_MONTHS = 36
 ALPHA = 0.05
 
 
+# ----------------------------------------------------------------------------
+# 2. Helpers & data access
+# ----------------------------------------------------------------------------
 def wrap_lon(lon):
     return ((lon + 180) % 360) - 180
 
@@ -196,6 +153,7 @@ def fmt_coords(lat, lon):
 
 
 def grid_cell(lat, lon, var_code):
+    """Approximate footprint of the source grid cell containing the selected point."""
     if var_code == "ALLSKY_SFC_SW_DWN":
         dlat, dlon = 1.0, 1.0
         label = "Approximate CERES-based solar grid cell (~1° × 1°)"
@@ -211,23 +169,26 @@ def grid_cell(lat, lon, var_code):
 
 @st.cache_data(show_spinner=False)
 def globe_click_mesh(step=5):
+    """Invisible grid of clickable points covering the globe."""
     lats = np.arange(-85, 86, step)
     lons = np.arange(-180, 180, step)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
-    return lat_grid.ravel(), lon_grid.ravel()
+    return lat_grid.ravel().astype(float), lon_grid.ravel().astype(float)
 
 
-@st.cache_data(show_spinner=False)
-def build_3d_globe_spec(lat_c, lon_c, var_code, has_selected):
-    g_lats, g_lons = globe_click_mesh(step=5)
+def build_globe(lat_c, lon_c, var_code, has_selected):
+    """3D orthographic globe. Trace 0 is the invisible click-target mesh."""
+    g_lats, g_lons = globe_click_mesh()
     fig = go.Figure()
 
     fig.add_trace(go.Scattergeo(
         lat=g_lats,
         lon=g_lons,
         mode="markers",
-        marker=dict(size=9, opacity=0.001, color="#ffffff"),
-        hovertemplate="Click to sample: %{lat:.0f}°, %{lon:.0f}°<extra></extra>",
+        marker=dict(size=18, opacity=0.001, color="#ffffff"),
+        selected=dict(marker=dict(opacity=0.001)),
+        unselected=dict(marker=dict(opacity=0.001)),
+        hovertemplate="Click to select: %{lat:.0f}°, %{lon:.0f}°<extra></extra>",
         showlegend=False,
     ))
 
@@ -235,25 +196,22 @@ def build_3d_globe_spec(lat_c, lon_c, var_code, has_selected):
         bounds, cell_label = grid_cell(lat_c, lon_c, var_code)
         south, west = bounds[0]
         north, east = bounds[1]
-
         fig.add_trace(go.Scattergeo(
             lat=[south, north, north, south, south],
             lon=[west, west, east, east, west],
             mode="lines",
             line=dict(color="#EF553B", width=2.2),
-            fill="toself",
-            fillcolor="rgba(239, 85, 59, 0.28)",
             hoverinfo="text",
             text=cell_label,
             showlegend=False,
         ))
-
         fig.add_trace(go.Scattergeo(
             lat=[lat_c],
             lon=[lon_c],
             mode="markers",
             marker=dict(size=13, color="#EF553B", symbol="circle-cross",
                         line=dict(color="white", width=1.8)),
+            unselected=dict(marker=dict(opacity=1)),
             hovertemplate=f"Target: {fmt_coords(lat_c, lon_c)}<extra></extra>",
             showlegend=False,
         ))
@@ -261,116 +219,25 @@ def build_3d_globe_spec(lat_c, lon_c, var_code, has_selected):
     fig.update_geos(
         projection_type="orthographic",
         projection_rotation=dict(lat=lat_c * 0.65, lon=lon_c, roll=0),
-        showland=True,
-        landcolor="rgb(40, 74, 54)",
-        showocean=True,
-        oceancolor="rgb(10, 30, 58)",
-        showlakes=True,
-        lakecolor="rgb(16, 46, 86)",
-        showrivers=False,
-        showcountries=True,
-        countrycolor="rgba(226, 232, 240, 0.38)",
-        countrywidth=0.7,
-        showcoastlines=True,
-        coastlinecolor="rgba(248, 250, 252, 0.7)",
-        coastlinewidth=0.85,
-        bgcolor="rgba(0,0,0,0)",
+        showland=True, landcolor="rgb(40, 74, 54)",
+        showocean=True, oceancolor="rgb(10, 30, 58)",
+        showlakes=True, lakecolor="rgb(16, 46, 86)",
+        showcountries=True, countrycolor="rgba(226, 232, 240, 0.38)", countrywidth=0.7,
+        showcoastlines=True, coastlinecolor="rgba(248, 250, 252, 0.7)", coastlinewidth=0.85,
+        bgcolor="#050914",
     )
-
     fig.update_layout(
         height=390,
         margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor="rgba(0,0,0,0)",
-        clickmode="event",
+        paper_bgcolor="#050914",
+        clickmode="event+select",
     )
-    return fig.to_json()
-
-
-def render_spinning_globe(lat_c, lon_c, var_code, has_selected):
-    fig_json = build_3d_globe_spec(lat_c, lon_c, var_code, has_selected)
-    html_code = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8" />
-        <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-        <style>
-            html, body {{
-                margin: 0;
-                padding: 0;
-                width: 100%;
-                height: 390px;
-                overflow: hidden;
-                background: radial-gradient(circle at center, #0e1a36 0%, #050914 100%);
-                border-radius: 14px;
-            }}
-            #globe {{
-                width: 100%;
-                height: 390px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div id="globe"></div>
-        <script>
-            const spec = {fig_json};
-            const el = document.getElementById("globe");
-            let spinning = true;
-            let currentLon = {lon_c};
-            const baseLat = {lat_c * 0.65};
-            let lastTime = performance.now();
-            let rafId = null;
-
-            function spinLoop(now) {{
-                if (!spinning) return;
-                const dt = Math.min((now - lastTime) / 1000, 0.1);
-                lastTime = now;
-                currentLon = ((currentLon + 12 * dt + 180) % 360) - 180;
-                Plotly.relayout(el, {{
-                    "geo.projection.rotation.lon": currentLon,
-                    "geo.projection.rotation.lat": baseLat
-                }});
-                rafId = requestAnimationFrame(spinLoop);
-            }}
-
-            function stopSpin() {{
-                if (!spinning) return;
-                spinning = false;
-                if (rafId) cancelAnimationFrame(rafId);
-            }}
-
-            Plotly.newPlot(el, spec.data, spec.layout, {{
-                displayModeBar: false,
-                responsive: true
-            }}).then(() => {{
-                lastTime = performance.now();
-                rafId = requestAnimationFrame(spinLoop);
-
-                el.addEventListener("pointerdown", stopSpin, {{ passive: true }});
-                el.addEventListener("wheel", stopSpin, {{ passive: true }});
-
-                el.on("plotly_click", (evt) => {{
-                    stopSpin();
-                    if (!evt || !evt.points || !evt.points.length) return;
-                    const pt = evt.points[0];
-                    if (typeof pt.lat === "number" && typeof pt.lon === "number") {{
-                        const url = new URL(window.parent.location.href);
-                        url.searchParams.set("glat", pt.lat.toFixed(2));
-                        url.searchParams.set("glon", pt.lon.toFixed(2));
-                        url.searchParams.set("gts", Date.now().toString());
-                        window.parent.location.href = url.toString();
-                    }}
-                }});
-            }});
-        </script>
-    </body>
-    </html>
-    """
-    components.html(html_code, height=394)
+    return fig, g_lats, g_lons
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def fetch_nasa_data(lat, lon, param, start_year, end_year):
+    """Download monthly NASA POWER data and compute deseasonalized anomalies."""
     url = "https://power.larc.nasa.gov/api/temporal/monthly/point"
     params = {
         "parameters": param,
@@ -444,6 +311,7 @@ def load_giovanni_validation():
 
 
 def compare_with_giovanni(val_df, power_df):
+    """Compare NASA POWER monthly air temperature with a Giovanni T2M export."""
     tcol = val_df.columns[0]
     num_cols = [c for c in val_df.columns[1:] if pd.api.types.is_numeric_dtype(val_df[c])]
     if not num_cols:
@@ -460,7 +328,7 @@ def compare_with_giovanni(val_df, power_df):
     }).dropna()
     if g.empty:
         return None, "The Giovanni file's time column could not be read."
-    if g["Giovanni"].mean() > 150:
+    if g["Giovanni"].mean() > 150:      # Giovanni reports MERRA-2 temperature in kelvin
         g["Giovanni"] = g["Giovanni"] - 273.15
 
     merged = (power_df[["Date", "Value"]].rename(columns={"Value": "POWER"})
@@ -482,8 +350,12 @@ def compare_with_giovanni(val_df, power_df):
     return merged, metrics
 
 
+# ----------------------------------------------------------------------------
+# 3. Statistics
+# ----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def analyze_trend(df, n_boot=300, block=12, seed=42):
+    """Theil-Sen slope, Hamed-Rao modified Mann-Kendall p-value, block-bootstrap interval."""
     y = df["Anomaly"].to_numpy(dtype=float)
     t = df["t"].to_numpy(dtype=float)
     n = len(y)
@@ -493,7 +365,6 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
     resid = y - fitted
 
     mk_res = mk.hamed_rao_modification_test(y)
-    p_val = getattr(mk_res, "p", getattr(mk_res, "p_value", 0.05))
 
     rng = np.random.default_rng(seed)
     n_blocks = int(np.ceil(n / block))
@@ -509,7 +380,7 @@ def analyze_trend(df, n_boot=300, block=12, seed=42):
         "ci_low": ci_low * 120,
         "ci_high": ci_high * 120,
         "total_change": slope * (t.max() - t.min()),
-        "mk_p": float(p_val),
+        "mk_p": float(mk_res.p),       # no silent fallback: a failure should surface as an error
         "trend_line": fitted,
     }
 
@@ -531,10 +402,11 @@ def verdict(res):
 
 
 def style_plotly_chart(fig, height=410):
+    """Dark chart cards that stay readable in both light and dark Streamlit themes."""
     fig.update_layout(
         height=height,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(15, 23, 42, 0.55)",
+        paper_bgcolor="#0b1220",
+        plot_bgcolor="#111b30",
         font=dict(color="#e2e8f0"),
         title_font=dict(size=16, color="#f8fafc"),
         xaxis=dict(gridcolor="rgba(148, 163, 184, 0.14)", zerolinecolor="rgba(148, 163, 184, 0.25)"),
@@ -544,52 +416,56 @@ def style_plotly_chart(fig, height=410):
     return fig
 
 
+# ----------------------------------------------------------------------------
+# 4. Session state & callbacks
+# ----------------------------------------------------------------------------
 st.session_state.setdefault("lat", 19.07)
 st.session_state.setdefault("lon", 72.87)
 st.session_state.setdefault("zoom", 3)
 st.session_state.setdefault("has_selected", False)
 st.session_state.setdefault("last_click", None)
-st.session_state.setdefault("last_globe_ts", None)
-st.session_state.setdefault("preset", "Select or Click Map/Globe")
+st.session_state.setdefault("last_globe_sel", None)
+st.session_state.setdefault("globe_nonce", 0)   # new key = fresh globe selection state
+st.session_state.setdefault("preset", NO_PRESET)
 
-qp = st.query_params
-if "glat" in qp and "glon" in qp:
-    g_ts = qp.get("gts", "")
-    if g_ts != st.session_state.last_globe_ts:
-        try:
-            st.session_state.last_globe_ts = g_ts
-            st.session_state.lat = round(float(qp["glat"]), 2)
-            st.session_state.lon = round(wrap_lon(float(qp["glon"])), 2)
-            st.session_state.zoom = max(st.session_state.zoom, 5)
-            st.session_state.has_selected = True
-            st.session_state["preset"] = "Select or Click Map/Globe"
-        except ValueError:
-            pass
-    st.query_params.clear()
-
+# Apply a pending preset label BEFORE the sidebar widget is instantiated
 if "pending_preset" in st.session_state:
     st.session_state["preset"] = st.session_state.pop("pending_preset")
+
+
+def set_location(lat, lon, zoom=5):
+    st.session_state["lat"] = round(float(lat), 4)
+    st.session_state["lon"] = round(wrap_lon(float(lon)), 4)
+    st.session_state["zoom"] = max(st.session_state["zoom"], zoom)
+    st.session_state["has_selected"] = True
 
 
 def on_preset_change():
     coords = PRESETS[st.session_state["preset"]]
     if coords is not None:
-        st.session_state["lat"], st.session_state["lon"] = coords
+        set_location(*coords)
         st.session_state["zoom"] = 5
-        st.session_state["has_selected"] = True
+        st.session_state["globe_nonce"] += 1
 
 
+def on_manual_coords():
+    set_location(st.session_state["in_lat"], st.session_state["in_lon"])
+    st.session_state["preset"] = NO_PRESET
+    st.session_state["globe_nonce"] += 1
+
+
+# ----------------------------------------------------------------------------
+# 5. UI
+# ----------------------------------------------------------------------------
 st.markdown(
     """
-    <div class="hero-box">
-        <div class="hero-badge">NASA POWER · MERRA-2 & CERES</div>
-        <h1 class="hero-title">🌍 Climate Signal</h1>
-        <p class="hero-sub">
-            Click anywhere on the spinning 3D globe or switch to the 2D satellite map to separate
-            statistically significant environmental trends from natural seasonal variability.
-        </p>
-    </div>
-    """,
+<div class="hero-box">
+<div class="hero-badge">NASA POWER · MERRA-2 &amp; CERES</div>
+<h1 class="hero-title">🌍 Climate Signal</h1>
+<p class="hero-sub">Click anywhere on the interactive 3D globe or the 2D satellite map to separate
+statistically significant environmental trends from natural seasonal variability.</p>
+</div>
+""",
     unsafe_allow_html=True,
 )
 
@@ -605,8 +481,13 @@ with st.sidebar:
     st.header("2. Quick-Jump Regions")
     st.selectbox("Jump to a Region", list(PRESETS.keys()), key="preset", on_change=on_preset_change)
 
+    with st.expander("📌 Or enter coordinates"):
+        st.number_input("Latitude", min_value=-90.0, max_value=90.0, value=19.07, step=0.5, key="in_lat")
+        st.number_input("Longitude", min_value=-180.0, max_value=180.0, value=72.87, step=0.5, key="in_lon")
+        st.button("Use these coordinates", on_click=on_manual_coords, **STRETCH)
+
     st.divider()
-    if st.button("🔄 Clear cached data", use_container_width=True):
+    if st.button("🔄 Clear cached data", **STRETCH):
         st.cache_data.clear()
         st.toast("Cache cleared. Fetching fresh data.")
 
@@ -628,7 +509,7 @@ col_map, col_info = st.columns([2.15, 1], gap="large")
 with col_map:
     view_mode = st.radio(
         "Spatial View",
-        options=["🌍 3D Spinning Globe", "🗺️ 2D Satellite & Street Map"],
+        options=["🌍 3D Globe", "🗺️ 2D Satellite & Street Map"],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -636,9 +517,36 @@ with col_map:
     lat_c, lon_c = st.session_state.lat, st.session_state.lon
     has_sel = st.session_state.has_selected
 
-    if view_mode == "🌍 3D Spinning Globe":
-        render_spinning_globe(lat_c, lon_c, var_code, has_sel)
-        st.caption("💡 Click anywhere on the globe to sample a location, or drag to inspect manually.")
+    if view_mode == "🌍 3D Globe":
+        globe_fig, g_lats, g_lons = build_globe(lat_c, lon_c, var_code, has_sel)
+        event = st.plotly_chart(
+            globe_fig,
+            key=f"globe_{st.session_state.globe_nonce}",
+            on_select="rerun",
+            selection_mode="points",
+            config={"displayModeBar": False},
+            **STRETCH,
+        )
+        st.caption("💡 Click anywhere on the globe to select a location, or drag to rotate it.")
+
+        # Read the clicked mesh point (trace 0) and adopt it as the new location
+        try:
+            points = event["selection"]["points"]
+        except (KeyError, TypeError):
+            points = []
+        for p in points:
+            if p.get("curve_number", 0) != 0:
+                continue
+            idx = p.get("point_index", p.get("point_number"))
+            if idx is None or not (0 <= int(idx) < len(g_lats)):
+                continue
+            sel = (float(g_lats[int(idx)]), float(g_lons[int(idx)]))
+            if sel != st.session_state.last_globe_sel:
+                st.session_state.last_globe_sel = sel
+                set_location(*sel)
+                st.session_state["preset"] = NO_PRESET
+                st.rerun()
+            break
     else:
         m = folium.Map(
             location=[lat_c, lon_c],
@@ -660,6 +568,7 @@ with col_map:
             """
         ))
 
+        # Satellite imagery + place labels form ONE base layer, so labels never double up on the street map
         satellite_group = folium.FeatureGroup(name="Satellite Imagery", overlay=False, show=True)
         folium.TileLayer(
             tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -690,7 +599,6 @@ with col_map:
                 fill_opacity=0.15,
                 tooltip=cell_label,
             ).add_to(m)
-
             folium.Marker(
                 [lat_c, lon_c],
                 tooltip=f"Target: {fmt_coords(lat_c, lon_c)}",
@@ -708,37 +616,35 @@ with col_map:
 
         if map_data and map_data.get("last_clicked"):
             click = (round(map_data["last_clicked"]["lat"], 4), round(map_data["last_clicked"]["lng"], 4))
+            # Act only on NEW clicks: a stale click must never override a preset choice
             if click != st.session_state.last_click:
                 st.session_state.last_click = click
-                st.session_state.lat = click[0]
-                st.session_state.lon = round(wrap_lon(click[1]), 4)
-                st.session_state.zoom = max(st.session_state.zoom, 5)
-                st.session_state.has_selected = True
-                st.session_state["pending_preset"] = "Select or Click Map/Globe"
+                set_location(*click)
+                st.session_state["pending_preset"] = NO_PRESET
+                st.session_state["globe_nonce"] += 1
                 st.rerun()
 
 with col_info:
-    coord_display = (
-        f"📍 {fmt_coords(st.session_state.lat, st.session_state.lon)}"
-        if has_sel
-        else f"📍 {fmt_coords(st.session_state.lat, st.session_state.lon)} (Default)"
-    )
+    coord_text = fmt_coords(st.session_state.lat, st.session_state.lon)
+    coord_display = f"📍 {coord_text}" if st.session_state.has_selected else f"📍 {coord_text} (Default)"
     st.markdown(
         f"""
-        <div class="target-card">
-            <div class="target-label">Selected Coordinates</div>
-            <div class="target-val">{coord_display}</div>
-            <div class="target-label">Earth Science Variable</div>
-            <div class="target-val">{v_meta['name']}</div>
-            <div class="target-label">NASA Source Dataset</div>
-            <div class="target-val" style="margin-bottom: 0;">🛰️ {v_meta['source']}</div>
-        </div>
-        """,
+<div class="target-card">
+<div class="target-label">Selected Coordinates</div>
+<div class="target-val">{coord_display}</div>
+<div class="target-label">Earth Science Variable</div>
+<div class="target-val">{v_meta['name']}</div>
+<div class="target-label">NASA Source Dataset</div>
+<div class="target-val" style="margin-bottom: 0;">🛰️ {v_meta['source']}</div>
+</div>
+""",
         unsafe_allow_html=True,
     )
     st.info(v_meta["desc"])
-    st.caption("Click any location on the globe or 2D map to drop a target marker and view its satellite grid cell.")
+    st.caption("Click any location on the globe or 2D map to drop a target marker. "
+               "Results describe the whole grid cell, not the exact point.")
 
+# --- Data & analysis -------------------------------------------------------
 st.divider()
 
 if year_range[1] - year_range[0] < 9:
@@ -796,6 +702,7 @@ else:
         "are within natural variability for the selected period."
     )
 
+# --- Charts & validation tabs ----------------------------------------------
 is_svalbard = (abs(st.session_state.lat - PRESETS[SVALBARD_NAME][0]) < 0.01
                and abs(st.session_state.lon - PRESETS[SVALBARD_NAME][1]) < 0.01)
 
